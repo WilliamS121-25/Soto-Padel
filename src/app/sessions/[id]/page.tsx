@@ -3,7 +3,13 @@ import { notFound } from "next/navigation";
 import * as db from "@/db";
 import { blocksPlayedFromMatches, buildPaymentSchedule, formatMoney } from "@/domain/payments";
 import { formatRating, ratingOptions } from "@/domain/rating";
+import { MAX_GAMES_PER_BLOCK } from "@/domain/types";
 import { detectScheduleDrift, reconstructRounds } from "@/domain/scheduler";
+import {
+  hasScore,
+  materialRatingChanges,
+  ratingChangesFromResults,
+} from "@/domain/rating-updates";
 import { allocateSignups } from "@/domain/signups";
 import { formatDateLong, formatSlotCount, formatSlotRange, formatTime } from "@/domain/time";
 import { computeCapacity } from "@/domain/timeline";
@@ -18,12 +24,14 @@ import {
 import { requireAdmin } from "@/lib/auth";
 import {
   addSignupAction,
+  applyRatingsAction,
   clearScheduleAction,
   deleteSessionAction,
   generateScheduleAction,
   importSignupsAction,
   removeSignupAction,
   restoreSignupAction,
+  setScoreAction,
   updateSessionAction,
   updateSignupAction,
   withdrawSignupAction,
@@ -57,6 +65,21 @@ export default async function SessionPage({
   const matches = db.listMatches(id);
   const rounds = reconstructRounds(session, allocation.confirmed, matches);
   const drift = detectScheduleDrift(allocation.confirmed, matches);
+
+  const scoredMatches = matches.filter((match) =>
+    hasScore({ gamesA: match.scoreA ?? 0, gamesB: match.scoreB ?? 0 }),
+  );
+  const ratingPreview = materialRatingChanges(
+    ratingChangesFromResults(
+      scoredMatches.map((match) => ({
+        teamA: match.teamA,
+        teamB: match.teamB,
+        gamesA: match.scoreA ?? 0,
+        gamesB: match.scoreB ?? 0,
+      })),
+      new Map(players.map((player) => [player.id, player.rating])),
+    ),
+  );
   const blocksPlayed = blocksPlayedFromMatches(matches);
   const payments = buildPaymentSchedule(session, allocation.confirmed, blocksPlayed);
   const symbol = currencySymbol(session.currency);
@@ -453,6 +476,33 @@ export default async function SessionPage({
                     <span className="side">{match.teamA.map(nameOf).join(" & ")}</span>
                     <span className="vs">vs</span>
                     <span className="side">{match.teamB.map(nameOf).join(" & ")}</span>
+                    <form action={setScoreAction} className="scorebox">
+                      <input type="hidden" name="sessionId" value={session.id} />
+                      <input type="hidden" name="slotIndex" value={match.slotIndex} />
+                      <input type="hidden" name="courtNumber" value={match.courtNumber} />
+                      <input
+                        type="number"
+                        name="scoreA"
+                        min={0}
+                        max={MAX_GAMES_PER_BLOCK}
+                        defaultValue={match.scoreA ?? ""}
+                        aria-label={`Games won by ${match.teamA.map(nameOf).join(" and ")}`}
+                        placeholder="-"
+                      />
+                      <span className="dash">-</span>
+                      <input
+                        type="number"
+                        name="scoreB"
+                        min={0}
+                        max={MAX_GAMES_PER_BLOCK}
+                        defaultValue={match.scoreB ?? ""}
+                        aria-label={`Games won by ${match.teamB.map(nameOf).join(" and ")}`}
+                        placeholder="-"
+                      />
+                      <button type="submit" className="link">
+                        save
+                      </button>
+                    </form>
                   </div>
                 ))}
               </div>
@@ -460,6 +510,86 @@ export default async function SessionPage({
           ))
         )}
       </div>
+
+      {/* ---------------------------------------------------------- ratings -- */}
+      {matches.length > 0 && (
+        <div className="card">
+          <h2>Ratings from the results</h2>
+          {session.ratingsAppliedAt ? (
+            <div className="note">
+              Ratings were updated from this mixin on{" "}
+              {session.ratingsAppliedAt.slice(0, 10)}. Each change is on the player&apos;s page
+              with the reason. This runs once per mixin, so the same games cannot be counted
+              twice — correct a mistake by editing that player&apos;s rating directly.
+            </div>
+          ) : (
+            <>
+              <p className="small muted">
+                Enter the games each team won next to the line-ups above. Ratings move on the
+                margin, not just the win: beating a stronger pair moves you more, and a result
+                that lands where the ratings predicted barely moves anyone. Nothing changes until
+                you apply it.
+              </p>
+
+              {scoredMatches.length === 0 ? (
+                <p className="empty">No scores recorded yet.</p>
+              ) : (
+                <>
+                  <p className="small muted">
+                    {scoredMatches.length} of {matches.length} games scored
+                    {scoredMatches.length < matches.length && " — unscored games are ignored"}.
+                  </p>
+
+                  {ratingPreview.length === 0 ? (
+                    <p className="empty">
+                      These results imply no rating change — everyone played to their level.
+                    </p>
+                  ) : (
+                    <div className="table-scroll">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Player</th>
+                            <th className="num">Games</th>
+                            <th className="num">Rating</th>
+                            <th className="num">Change</th>
+                            <th className="num">New rating</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {ratingPreview.map((change) => (
+                            <tr key={change.playerId}>
+                              <td>{nameOf(change.playerId)}</td>
+                              <td className="num">{change.gamesCounted}</td>
+                              <td className="num">{formatRating(change.from)}</td>
+                              <td className="num">
+                                <span className={`pill ${change.delta > 0 ? "ok" : "out"}`}>
+                                  {change.delta > 0 ? "+" : ""}
+                                  {change.delta.toFixed(2)}
+                                </span>
+                              </td>
+                              <td className="num">{formatRating(change.to)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {ratingPreview.length > 0 && (
+                    <form action={applyRatingsAction} className="actions">
+                      <input type="hidden" name="sessionId" value={session.id} />
+                      <button type="submit" className="primary">
+                        Apply these rating changes
+                      </button>
+                    </form>
+                  )}
+                </>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {/* --------------------------------------------------------- payments -- */}
       <div className="card">

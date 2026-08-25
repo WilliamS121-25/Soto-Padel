@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   currency             TEXT    NOT NULL DEFAULT 'EUR',
   status               TEXT    NOT NULL DEFAULT 'OPEN',
   created_at           TEXT    NOT NULL,
-  created_by           TEXT    NOT NULL
+  created_by           TEXT    NOT NULL,
+  ratings_applied_at   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(date DESC);
 
@@ -74,7 +75,24 @@ CREATE TABLE IF NOT EXISTS matches (
   team_a1      TEXT    NOT NULL REFERENCES players(id),
   team_a2      TEXT    NOT NULL REFERENCES players(id),
   team_b1      TEXT    NOT NULL REFERENCES players(id),
-  team_b2      TEXT    NOT NULL REFERENCES players(id)
+  team_b2      TEXT    NOT NULL REFERENCES players(id),
+  score_a      INTEGER,
+  score_b      INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_matches_session ON matches(session_id, slot_index, court_number);
 `;
+
+/**
+ * Columns added after the first release. `CREATE TABLE IF NOT EXISTS` leaves an
+ * existing table alone, so a database created before these existed would never
+ * gain them. SQLite has no `ADD COLUMN IF NOT EXISTS`, so each one is checked
+ * against `PRAGMA table_info` and added only when missing.
+ *
+ * Additive only. Anything that rewrites existing rows needs a real migration
+ * tool rather than this list.
+ */
+export const ADDED_COLUMNS: { table: string; column: string; type: string }[] = [
+  { table: "matches", column: "score_a", type: "INTEGER" },
+  { table: "matches", column: "score_b", type: "INTEGER" },
+  { table: "sessions", column: "ratings_applied_at", type: "TEXT" },
+];

@@ -18,6 +18,7 @@ export function makeSession(overrides: Partial<Session> = {}): Session {
     status: "OPEN",
     createdAt: "2025-08-01T00:00:00.000Z",
     createdBy: "admin",
+    ratingsAppliedAt: null,
     ...overrides,
   };
 }

@@ -73,6 +73,7 @@ in a page or an action**.
 | `signups.ts` | Place allocation, reserve queue, promotion on withdrawal |
 | `scheduler.ts` | Draw generation, round reconstruction, stale-draw detection |
 | `history.ts` | Partner and opponent counts across sessions |
+| `rating-updates.ts` | Turning recorded scores into rating changes |
 | `payments.ts` | Cost split, money formatting and parsing |
 | `whatsapp.ts` | The four copy-paste message builders |
 | `parse-signups.ts` | Reading pasted WhatsApp text |
@@ -104,6 +105,19 @@ writes `CONFIRMED`/`RESERVE` as though it were the source of truth.
 and the session page refuses to let that pass silently — the payment split is
 derived from the draw, so a stale draw means the wrong people are being charged.
 
+**5. Ratings derived from results are applied once, deliberately.** Scores are
+recorded per match as games won; `ratingChangesFromResults` turns them into
+per-player deltas, and `applyRatingChanges` writes them exactly once per session
+(guarded by `sessions.ratings_applied_at`). Two consequences to respect:
+
+- Every block is judged against the ratings players held *before* the session,
+  never against ratings the same evening already moved. Otherwise the order
+  scores were typed in would change the answer.
+- There is no un-apply. Re-running would measure results against ratings those
+  results already moved, double-counting every game. Doing it safely needs a
+  stored pre-session baseline; until then, a wrong score is corrected by editing
+  the player's rating by hand, which is audited like any other change.
+
 ## Conventions
 
 - **Money is integer minor units (cents).** Never a float. Parse with
@@ -114,6 +128,11 @@ derived from the draw, so a stale draw means the wrong people are being charged.
   in the club's local calendar and are never timezone-converted. `formatDateLong`
   uses a fixed name table on purpose, so output does not shift with the host
   timezone or ICU data.
+- **Manual ratings snap; derived ratings do not.** `normaliseRating` snaps to the
+  scale's step for the manual dropdown. `clampRating` only bounds, and is what
+  `setPlayerRating(..., { snap: false })` uses for changes derived from results —
+  a night's play might move someone 0.13, and snapping that would either
+  overstate it or throw it away. A rating of 4.09 is legitimate.
 - **The scheduler is deterministic.** No seed means the same input always gives
   the same draw. A seed changes the draw ("re-draw differently") through a small
   PRNG, never `Math.random()`.
@@ -132,7 +151,7 @@ derived from the draw, so a stale draw means the wrong people are being charged.
 
 ## Testing
 
-Around 100 tests. Domain modules are tested directly; `tests/db.test.ts` runs
+Around 130 tests. Domain modules are tested directly; `tests/db.test.ts` runs
 against a real SQLite file in a temp directory, importing `@/db` lazily so
 `DATABASE_PATH` is set before the connection opens. `tests/fixtures.ts` has
 builders — `makeSession`, `makeSignup`, `ladder` (n players spread over a rating
@@ -142,6 +161,13 @@ When changing the scheduler, do not assert on an exact draw. Assert the
 properties that matter: everyone gets the games they asked for, no repeat
 partnerships when there is room to avoid them, each four stays close in level,
 teams within a four stay balanced, late arrivals do not appear in early rounds.
+
+When changing the rating maths, assert properties rather than exact numbers
+where you can: a draw moves nobody, a single match is zero-sum, both players in a
+pair move identically, entry order cannot change the outcome, the session cap and
+the ends of the scale both hold. One number worth pinning is the magnitude for a
+typical evening — it is what stops a well-meaning tweak making the whole feature
+inert, which is exactly what an early `k` of 0.08 did.
 
 **The scheduler's weights were tuned by measurement, not taste.** They were swept
 across five mixin shapes (12–28 players, 3–5 courts) comparing repeat
@@ -155,6 +181,15 @@ noise rather than quality.
 - The database schema in `src/db/schema.ts` is one idempotent script applied on
   every boot. There is no migration tool. Additive changes are safe; anything
   that rewrites existing data needs a real migration story first.
+- `CREATE TABLE IF NOT EXISTS` will not add a column to a table that already
+  exists, so columns added after the first release go in the `ADDED_COLUMNS` list
+  and are applied by `addMissingColumns` on boot after checking
+  `PRAGMA table_info`. Add to that list when adding a column, or existing
+  databases will not gain it. `tests/db-migration.test.ts` opens a database built
+  on the pre-scores schema and checks it upgrades with its rows intact.
+- Regenerating a draw clears its scores (`replaceMatches` writes no score
+  columns). That is intended: a new draw puts different people on court, so an
+  old result is void.
 - `session_courts` is keyed on `(session_id, court_number)`, so a court can hold
   one window per mixin. Two separate windows for the same court on the same night
   would need that key relaxed. `buildTimeline` already copes.
@@ -181,9 +216,25 @@ Flagged so they are not mistaken for requirements:
 - Auth is one shared passcode. Anyone with it can act as any name. Fine for a
   few organisers, not fine if this ever holds anything sensitive.
 - Nothing tracks whether a payment was actually collected — only the schedule.
+- A 30-minute block is scored as games won per team, capped at
+  `MAX_GAMES_PER_BLOCK`. Points, sets and tiebreaks are not modelled.
+- How fast ratings move (`DEFAULT_RATING_UPDATE_OPTIONS`) was calibrated against
+  measured cases, not against real club data. Watch it over a few real nights
+  before trusting the pace, and change `k` or `maxSessionChange` rather than
+  reaching for a different algorithm.
 
 ## Maintaining this file
 
 Update it in the same commit as the change that invalidates it: a new command, a
 new top-level directory, a new domain module, or a change to one of the four
 ideas above. Keep it about what is not obvious from reading the code.
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->
