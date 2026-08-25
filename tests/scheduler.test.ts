@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { HistoryIndex, pairKey } from "@/domain/history";
-import { generateSchedule } from "@/domain/scheduler";
+import { detectScheduleDrift, generateSchedule, reconstructRounds } from "@/domain/scheduler";
 import { parseTime } from "@/domain/time";
 import { court, ladder, makeSession, makeSignup, makePlayer, ratingMap } from "./fixtures";
 
@@ -193,5 +193,77 @@ describe("staggered courts", () => {
     expect(courtsByRound[1]).toEqual([1]);
     expect(courtsByRound[2]).toEqual([1, 4]);
     expect(result.shortfalls).toEqual([]);
+  });
+});
+
+describe("rebuilding rounds from a saved schedule", () => {
+  const players = ladder(6, 3, 4.5);
+  const session = makeSession({ slotCount: 2, courts: [court(1, "18:00", 2)] });
+  // Four players want both games; two want only the first.
+  const signups = players.map((p, i) => makeSignup(p.id, i < 4 ? 2 : 1, "18:00", i + 1));
+  const generated = generateSchedule({ session, signups, ratings: ratingMap(players) });
+
+  it("reproduces the generated rounds exactly", () => {
+    const rebuilt = reconstructRounds(session, signups, generated.matches);
+    expect(rebuilt.map((r) => r.matches)).toEqual(generated.rounds.map((r) => r.matches));
+    expect(rebuilt.map((r) => r.startMinutes)).toEqual(generated.rounds.map((r) => r.startMinutes));
+  });
+
+  it("counts as sitting out only those still owed a game", () => {
+    const rebuilt = reconstructRounds(session, signups, generated.matches);
+    const secondRound = rebuilt[1];
+    expect(secondRound).toBeDefined();
+    // Anyone listed as waiting must still have games outstanding, so nobody who
+    // asked for a single game appears in the second block.
+    for (const id of secondRound!.sittingOut) {
+      const signup = signups.find((s) => s.playerId === id);
+      expect(signup?.requestedSlots).toBe(2);
+    }
+  });
+
+  it("places each match in the block its court was booked for", () => {
+    const staggered = makeSession({
+      slotCount: 3,
+      courts: [court(1, "18:00", 3), court(2, "19:00", 1)],
+    });
+    const eight = ladder(8, 3, 5);
+    const eightSignups = eight.map((p, i) => makeSignup(p.id, 2, "18:00", i + 1));
+    const result = generateSchedule({ session: staggered, signups: eightSignups, ratings: ratingMap(eight) });
+    const rebuilt = reconstructRounds(staggered, eightSignups, result.matches);
+
+    const courtTwoRound = rebuilt.find((r) => r.matches.some((m) => m.courtNumber === 2));
+    expect(courtTwoRound?.startMinutes).toBe(parseTime("19:00"));
+  });
+});
+
+describe("spotting a draw that has gone stale", () => {
+  const players = ladder(8, 3, 5);
+  const session = makeSession({ slotCount: 2, courts: [court(1, "18:00", 2), court(2, "18:00", 2)] });
+  const signups = players.map((p, i) => makeSignup(p.id, 2, "18:00", i + 1));
+  const result = generateSchedule({ session, signups, ratings: ratingMap(players) });
+
+  it("is happy when the draw matches the signups", () => {
+    const drift = detectScheduleDrift(signups, result.matches);
+    expect(drift.isStale).toBe(false);
+    expect(drift.scheduledButNotAttending).toEqual([]);
+    expect(drift.confirmedButNotScheduled).toEqual([]);
+  });
+
+  it("flags a player who dropped out after the draw", () => {
+    const remaining = signups.filter((s) => s.playerId !== "p3");
+    const drift = detectScheduleDrift(remaining, result.matches);
+    expect(drift.isStale).toBe(true);
+    expect(drift.scheduledButNotAttending).toEqual(["p3"]);
+  });
+
+  it("flags a reserve promoted after the draw", () => {
+    const promoted = [...signups, makeSignup("late", 2, "18:00", 9)];
+    const drift = detectScheduleDrift(promoted, result.matches);
+    expect(drift.isStale).toBe(true);
+    expect(drift.confirmedButNotScheduled).toEqual(["late"]);
+  });
+
+  it("says nothing when no draw has been made yet", () => {
+    expect(detectScheduleDrift(signups, []).isStale).toBe(false);
   });
 });

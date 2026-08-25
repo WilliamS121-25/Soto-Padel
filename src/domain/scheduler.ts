@@ -358,3 +358,83 @@ export function generateSchedule(input: SchedulerInput): ScheduleResult {
     totalCost,
   };
 }
+
+/**
+ * Rebuild the round-by-round view from a schedule that was saved earlier.
+ *
+ * The stored matches say who plays where; they do not record who was waiting.
+ * That is recovered by walking the blocks in order and tracking how many games
+ * each player has left, so "sitting out" means genuinely waiting for a court
+ * rather than already finished for the evening.
+ */
+export function reconstructRounds(
+  session: Session,
+  confirmed: Signup[],
+  matches: Match[],
+): Round[] {
+  const timeline = buildTimeline(session).filter((slot) => slot.courts.length > 0);
+  const remaining = new Map(confirmed.map((s) => [s.playerId, s.requestedSlots]));
+  const earliest = new Map(confirmed.map((s) => [s.playerId, s.earliestStartMinutes]));
+
+  const rounds: Round[] = [];
+  for (const slot of timeline) {
+    const slotMatches = matches
+      .filter((m) => m.slotIndex === slot.slotIndex)
+      .sort((a, b) => a.courtNumber - b.courtNumber);
+    const playing = new Set(slotMatches.flatMap((m) => [...m.teamA, ...m.teamB]));
+
+    const sittingOut = confirmed
+      .map((s) => s.playerId)
+      .filter(
+        (id) =>
+          !playing.has(id) &&
+          (remaining.get(id) ?? 0) > 0 &&
+          slot.startMinutes >= (earliest.get(id) ?? Number.POSITIVE_INFINITY),
+      );
+
+    for (const id of playing) remaining.set(id, (remaining.get(id) ?? 0) - 1);
+
+    if (slotMatches.length > 0 || sittingOut.length > 0) {
+      rounds.push({
+        slotIndex: slot.slotIndex,
+        startMinutes: slot.startMinutes,
+        matches: slotMatches,
+        sittingOut,
+      });
+    }
+  }
+  return rounds;
+}
+
+export interface ScheduleDrift {
+  /** In the saved draw but no longer attending. */
+  scheduledButNotAttending: string[];
+  /** Confirmed to play but absent from the saved draw. */
+  confirmedButNotScheduled: string[];
+  isStale: boolean;
+}
+
+/**
+ * Compare a saved draw against the current signup list.
+ *
+ * Signups keep moving after the line-ups are drawn — someone drops out, a
+ * reserve moves up, a court gets added. When that happens the saved draw is
+ * quietly wrong, and the payment split that follows from it is wrong too. This
+ * spots the mismatch so the admin is told to redraw rather than sending out
+ * stale line-ups.
+ */
+export function detectScheduleDrift(confirmed: Signup[], matches: Match[]): ScheduleDrift {
+  const scheduled = new Set(matches.flatMap((m) => [...m.teamA, ...m.teamB]));
+  const confirmedIds = new Set(confirmed.map((s) => s.playerId));
+
+  const scheduledButNotAttending = [...scheduled].filter((id) => !confirmedIds.has(id));
+  const confirmedButNotScheduled = [...confirmedIds].filter((id) => !scheduled.has(id));
+
+  return {
+    scheduledButNotAttending,
+    confirmedButNotScheduled,
+    isStale:
+      matches.length > 0 &&
+      (scheduledButNotAttending.length > 0 || confirmedButNotScheduled.length > 0),
+  };
+}

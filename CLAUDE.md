@@ -2,244 +2,182 @@
 
 Guidance for Claude Code and other AI assistants working in this repository.
 
-> **⚠️ STATUS: GREENFIELD — NO CODE EXISTS YET.**
->
-> As of **2026-08-25**, `WilliamS121-25/Soto-Padel` is an **empty repository**: zero
-> commits, zero branches, zero files. This document is therefore a *scaffold*, not a
-> description of a real codebase. Sections below are explicitly tagged:
->
-> - **[VERIFIED]** — checked against the repo/session and true today.
-> - **[ASSUMED]** — an inference that has **not** been confirmed by the project owner.
-> - **[TODO]** — must be filled in once real code lands. Do not treat as fact.
->
-> **If you are an AI assistant reading this: do not present [ASSUMED] or [TODO] content
-> as established fact.** Verify before relying on it, and replace it with reality as
-> soon as reality exists.
+## What this is
 
----
+A web app for running the social padel mixin at Soto Padel: a club organiser
+takes signups from a WhatsApp group, keeps a reserve list, draws level-matched
+line-ups that mix up partners and opponents, and produces a payment schedule to
+paste back into the group. It is shared between a handful of admins behind one
+passcode.
 
-## 1. Project context
+`README.md` explains the product and how a mixin is run. This file covers how the
+code is arranged and the conventions to follow.
 
-**[ASSUMED]** The name "Soto Padel" suggests a project relating to **padel** (the racquet
-sport) — most plausibly a club/venue website or a court-booking and match-management
-application. Nothing in the repository confirms this.
+## Stack
 
-**[TODO]** Replace this section with the actual purpose. Answer, in one paragraph each:
-
-- What problem does Soto Padel solve, and for whom? (Club owners? Players? Both?)
-- Is it a public marketing site, a booking system, an internal admin tool, or several?
-- Who are the users, and are there distinct roles (player, coach, admin, front desk)?
-- Is there an existing product, spreadsheet, or manual process this replaces?
-
----
-
-## 2. Current repository state
-
-**[VERIFIED]** How this was determined, and how to re-verify:
-
-```bash
-git ls-remote origin        # returns nothing → remote has no refs
-git log --all --oneline     # returns nothing → no commits
-find .git/objects -type f   # returns nothing → no objects
-```
-
-The GitHub API confirms it independently, returning
-`409 Git Repository is empty` for the repository root.
-
-Consequences an assistant should expect:
-
-- There is **no default branch** yet. `main` does not exist.
-- `git status` / `git log` will error with *"does not have any commits yet"* until the
-  first commit exists. This is normal here, not a broken checkout.
-- Any request to "analyze the codebase", "run the tests", "fix the build", or "follow
-  existing conventions" **cannot be satisfied from this repository**. Say so plainly
-  rather than inventing an answer. If the code exists elsewhere, ask where.
-
----
-
-## 3. Git and branch workflow
-
-**[VERIFIED]** — this reflects how sessions in this repo are configured.
-
-- **Remote:** `https://github.com/WilliamS121-25/Soto-Padel`
-- **Work happens on a designated feature branch**, never directly on the default branch.
-  Sessions are given an explicit branch name (for example
-  `claude/claude-md-docs-osr188`); create it locally if it does not exist.
-- **Never push to a branch other than the designated one** without explicit permission.
-- Push with upstream tracking:
-
-  ```bash
-  git push -u origin <branch-name>
-  ```
-
-- On **network** failures only, retry the push up to 4 times with exponential backoff
-  (2s, 4s, 8s, 16s). Do not retry on rejected/auth failures — diagnose those instead.
-- Prefer fetching a specific branch: `git fetch origin <branch-name>`.
-- **Do not open a pull request unless explicitly asked.**
-- **Never rewrite history on a branch you did not create** (no rebase, amend, or
-  force-push over someone else's work). A merge commit keeps their checkout valid.
-- If the PR for a designated branch has **already been merged**, treat follow-up work as
-  a fresh change: restart the branch from the latest default branch rather than stacking
-  commits on merged history.
-
-  ```bash
-  git fetch origin <default-branch>
-  git checkout -B <branch-name> origin/<default-branch>
-  ```
-
-  Exception: if the branch carries unmerged commits, rebase them onto the new base
-  instead of discarding them.
-
-### First-push caveat
-
-**[VERIFIED]** Because the repository is empty, whichever branch is pushed first may
-become GitHub's default branch. Once real work begins, create and push `main` (or the
-project's chosen trunk) and set it as the default in repository settings, so feature
-branches are not left acting as trunk.
-
----
-
-## 4. Commit conventions
-
-**[TODO]** Confirm with the project owner. Until decided, use these defaults:
-
-- **Conventional Commits** — `feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`,
-  `ci:`, `build:`. Optional scope: `feat(booking): ...`.
-- Imperative mood, lower case after the colon, no trailing period.
-- Subject ≤ 72 characters; body explains *why*, not *what* (the diff shows what).
-- One logical change per commit. Don't mix a refactor with a behavior change.
-- **Never** include an AI/model identifier in commit messages, PR titles or bodies, code
-  comments, or any other committed artifact.
-
----
-
-## 5. Technology stack
-
-**[TODO] — NOT YET DECIDED. Do not assume a stack; ask.**
-
-No `package.json`, `pyproject.toml`, `go.mod`, `Gemfile`, `pom.xml`, or any other
-manifest exists. An assistant asked to add code here must get the stack decided first
-rather than picking one silently — the choice is the owner's, and it is expensive to
-reverse once dependencies and deploy config are committed.
-
-Decisions to capture here once made:
-
-| Decision | Value |
+| | |
 | --- | --- |
-| Language(s) and version | [TODO] |
-| Runtime / package manager (with lockfile committed) | [TODO] |
-| Frontend framework | [TODO] |
-| Backend / API style (REST, GraphQL, RPC) | [TODO] |
-| Database + migration tool | [TODO] |
-| Authentication approach | [TODO] |
-| Test framework(s) | [TODO] |
-| Lint / format tooling | [TODO] |
-| CI provider and required checks | [TODO] |
-| Hosting / deploy target | [TODO] |
-| Payment provider, if bookings are paid | [TODO] |
+| Framework | Next.js 16 (App Router, Turbopack), React 19 |
+| Language | TypeScript, `strict` **and `noUncheckedIndexedAccess`** |
+| Database | SQLite via `better-sqlite3`, one file, schema applied on boot |
+| Tests | Vitest |
+| Styling | One hand-written stylesheet, `src/app/globals.css`. No CSS framework. |
+| Auth | Shared passcode + HMAC-signed cookie, `src/lib/auth.ts` |
 
----
+There is no ESLint setup; `npm run check` (typecheck + tests) is the gate.
 
-## 6. Repository structure
-
-**[TODO]** Document the real layout once it exists. Keep this as a map of *where things
-go and why*, not an exhaustive `tree` dump — an assistant needs to know which directory
-a new file belongs in.
-
-For each top-level directory, record: what lives there, what must **not** live there, and
-the module's owner/entry point.
-
----
-
-## 7. Development commands
-
-**[TODO]** Fill in the exact, copy-pasteable commands. These are the highest-value lines
-in this file for an assistant — they remove guesswork about how to validate a change.
+## Commands
 
 | Task | Command |
 | --- | --- |
-| Install dependencies | [TODO] |
-| Run app locally | [TODO] |
-| Run full test suite | [TODO] |
-| Run a single test file | [TODO] |
-| Lint | [TODO] |
-| Auto-format | [TODO] |
-| Type-check | [TODO] |
-| Build for production | [TODO] |
-| Run database migrations | [TODO] |
-| Seed local data | [TODO] |
+| Install | `npm install` |
+| Dev server | `npm run dev` |
+| Typecheck | `npm run typecheck` |
+| Tests | `npm test` (watch: `npm run test:watch`) |
+| **Typecheck + tests** | `npm run check` — run this before committing |
+| Production build | `npm run build` |
+| Serve production build | `npm start` |
 
-**Pre-push checklist** — once the commands above exist, run the fast ones (lint, format,
-type-check, affected unit tests) **before** pushing. One validated push beats three
-speculative ones that redden CI.
+`ADMIN_PASSCODE` and `SESSION_SECRET` must be set or nobody can sign in — see
+`.env.example`. `npm run build` needs them too.
 
----
+## Layout
 
-## 8. Conventions to establish
+```
+src/
+├── domain/     Pure logic. No framework, no database, no I/O.
+├── db/         SQLite schema and repository functions.
+├── lib/        auth.ts — passcode check and signed cookie.
+└── app/        Next.js App Router: pages, server actions, client components.
+tests/          Vitest suites, one per domain module, plus db.test.ts.
+```
 
-**[TODO]** Each of these is a real decision that shapes how assistants write code here.
-Record the answer, not just the question.
+### `src/domain/` — where the real work happens
 
-- **Naming** — file, directory, component, database table, and API route casing.
-- **Error handling** — exceptions vs. result types; what gets logged vs. surfaced.
-- **Validation** — where untrusted input is validated, and with what library.
-- **Testing** — expected coverage, unit vs. integration split, what must have a test
-  before merge. **Never skip, disable, or quarantine a test to make CI green.**
-- **Secrets** — how configuration and credentials are supplied (`.env` is
-  `.gitignore`d; never commit real secrets, keys, or tokens). Document a
-  `.env.example` instead.
-- **Time zones and dates** — critical for a booking system: store UTC, render local, and
-  name the club's local zone here explicitly.
-- **Money** — store minor units as integers; never floats for currency.
-- **Accessibility and i18n** — if the audience is bilingual (e.g. Spanish/English),
-  decide up front; retrofitting i18n is expensive.
+This is the important part of the codebase. It is plain TypeScript that can be
+tested without a browser or a database, and **new logic belongs here rather than
+in a page or an action**.
 
----
+| Module | Responsibility |
+| --- | --- |
+| `types.ts` | Domain types, the five physical courts, payment methods, rating scales |
+| `time.ts` | Minutes-from-midnight helpers, slot ranges, date formatting |
+| `timeline.ts` | The 30-minute grid, per-court windows, capacity |
+| `rating.ts` | Scale validation, snapping, bands |
+| `signups.ts` | Place allocation, reserve queue, promotion on withdrawal |
+| `scheduler.ts` | Draw generation, round reconstruction, stale-draw detection |
+| `history.ts` | Partner and opponent counts across sessions |
+| `payments.ts` | Cost split, money formatting and parsing |
+| `whatsapp.ts` | The four copy-paste message builders |
+| `parse-signups.ts` | Reading pasted WhatsApp text |
 
-## 9. Domain notes
+## Ideas the code is built on
 
-**[ASSUMED]** Padel background that may be useful *if* the sport assumption holds.
-Confirm with the owner before encoding any of it in a schema.
+Get these four and the rest follows.
 
-- A padel **court** is enclosed by walls/glass; play is doubles-dominant, so a booking is
-  typically for **4 players** on one court for a fixed slot (commonly 60 or 90 minutes).
-- Common social formats — **Americano** and **Mexicano** — rotate partners between short
-  rounds and aggregate points per *player*, not per fixed pair. If the app schedules
-  these, player-level scoring is a core modelling requirement, not a nicety.
-- Typical booking concerns: peak/off-peak pricing, cancellation windows, no-show policy,
-  recurring bookings, waitlists, court lighting, and indoor/outdoor courts.
-- **Court availability is the contended resource** — double-booking is the defining
-  correctness risk. Any booking implementation needs a real concurrency story
-  (unique constraint on court + time range, or transactional locking), not
-  application-level "check then insert".
+**1. Capacity is player-blocks, not people.** Every court seats four players for
+every half-hour it is booked. Five courts for two hours is 5 × 4 × 4 = 80
+player-blocks, and someone asking for four games consumes four of them. Nothing
+in the app has a "maximum number of players" — see `computeCapacity`.
 
----
+**2. Every court has its own window.** A court is `{ courtNumber, startMinutes,
+slotCount }`, independent of the session's own start time, because courts get
+booked in staggered blocks. `buildTimeline` spans the union of the advertised
+window and every court's window, so a court booked outside the advertised hours
+is still scheduled. Never assume court start equals session start.
 
-## 10. Guidance for AI assistants
+**3. Confirmed vs reserve is derived, never stored.** `signups.status` only
+distinguishes withdrawn from active. Who is *in* is recomputed by
+`allocateSignups` on every render from queue order and current capacity. This is
+deliberate: add a court and the reserves are promoted with no extra code, and the
+lists can never drift out of step with capacity. Do not add a code path that
+writes `CONFIRMED`/`RESERVE` as though it were the source of truth.
 
-1. **Do not fabricate.** If asked to describe structure, workflows, or conventions that
-   this file marks [TODO], say they are not yet defined. A confident wrong answer about
-   an empty repo is worse than "there's nothing here yet".
-2. **Check the repo state first.** Run the commands in §2 before concluding anything
-   about what exists.
-3. **Ask before choosing the stack.** See §5.
-4. **Deliver the scope asked for** — don't quietly widen a task into a rewrite, or narrow
-   it to the easy part. If part of it is blocked, finish the rest and say what you left out.
-5. **Prefer the repo's own tooling** for generated files and lockfiles — regenerate,
-   never hand-edit.
-6. **Keep this file honest.** It is a living document; see §11.
+**4. A saved draw goes stale.** Signups keep moving after the line-ups are drawn.
+`detectScheduleDrift` compares a saved draw against the current confirmed list,
+and the session page refuses to let that pass silently — the payment split is
+derived from the draw, so a stale draw means the wrong people are being charged.
 
----
+## Conventions
 
-## 11. Maintaining this file
+- **Money is integer minor units (cents).** Never a float. Parse with
+  `parseMoney`, render with `formatMoney`. Any split must add up to the total
+  exactly; `buildPaymentSchedule` hands the rounding remainder to the largest
+  shares.
+- **Times are minutes from midnight**, integers. Dates are `YYYY-MM-DD` strings
+  in the club's local calendar and are never timezone-converted. `formatDateLong`
+  uses a fixed name table on purpose, so output does not shift with the host
+  timezone or ICU data.
+- **The scheduler is deterministic.** No seed means the same input always gives
+  the same draw. A seed changes the draw ("re-draw differently") through a small
+  PRNG, never `Math.random()`.
+- **Nothing is sent anywhere.** Messages are text for the admin to copy. Do not
+  add an outbound integration without being asked.
+- **Do not guess on the user's behalf.** `parse-signups.ts` returns `null` plus a
+  note in `problems` when it cannot read a field. The import summary names every
+  player it created so ratings can be checked. Keep that posture: a wrong rating
+  silently invented corrupts every future draw.
+- **`noUncheckedIndexedAccess` is on.** Array and `Map` access is
+  `T | undefined`. Handle it; do not reach for `!` to shut it up.
+- Server actions live in `src/app/actions.ts`, all guarded by `requireAdmin()`.
+  They validate, then redirect back with `?notice=` or `?error=`, which the pages
+  render. Client components are only used where interactivity is genuinely
+  needed: `court-picker.tsx` and `copy-button.tsx`.
 
-Update CLAUDE.md in the same commit as the change that invalidates it. Specifically:
+## Testing
 
-- Adding a dependency, script, or command → update §5 / §7.
-- Adding a top-level directory → update §6.
-- Making a convention decision → update §8 and delete the [TODO].
+Around 100 tests. Domain modules are tested directly; `tests/db.test.ts` runs
+against a real SQLite file in a temp directory, importing `@/db` lazily so
+`DATABASE_PATH` is set before the connection opens. `tests/fixtures.ts` has
+builders — `makeSession`, `makeSignup`, `ladder` (n players spread over a rating
+range), `court`.
 
-**This scaffold has done its job when every [TODO] and [ASSUMED] tag is gone and the
-status banner at the top is deleted.** At that point rewrite it as a description of what
-the codebase actually is — ideally by re-running an analysis against the real code rather
-than editing these placeholders in place.
+When changing the scheduler, do not assert on an exact draw. Assert the
+properties that matter: everyone gets the games they asked for, no repeat
+partnerships when there is room to avoid them, each four stays close in level,
+teams within a four stay balanced, late arrivals do not appear in early rounds.
+
+**The scheduler's weights were tuned by measurement, not taste.** They were swept
+across five mixin shapes (12–28 players, 3–5 courts) comparing repeat
+partnerships, worst level spread and worst team gap. If you change
+`DEFAULT_WEIGHTS`, re-measure across several shapes rather than one — a single
+scenario sits inside the hill-climb's run-to-run noise, and tuning on it fits
+noise rather than quality.
+
+## Things worth knowing before changing something
+
+- The database schema in `src/db/schema.ts` is one idempotent script applied on
+  every boot. There is no migration tool. Additive changes are safe; anything
+  that rewrites existing data needs a real migration story first.
+- `session_courts` is keyed on `(session_id, court_number)`, so a court can hold
+  one window per mixin. Two separate windows for the same court on the same night
+  would need that key relaxed. `buildTimeline` already copes.
+- The database path is read from `DATABASE_PATH` at connection time and carries a
+  `/* turbopackIgnore: true */` comment. Removing it makes the bundler trace the
+  whole project into the server output.
+- `better-sqlite3` is native and listed in `serverExternalPackages` in
+  `next.config.ts`. It must not be bundled.
+- Deployment needs a persistent disk. Serverless platforms with an ephemeral
+  filesystem will lose the database; moving to Postgres means replacing
+  `src/db/index.ts`, and the domain layer would not need to change.
+- `signups.note` is stored and accepted by `addSignup`, but no form supplies it
+  yet. It is a spare field, not dead code to delete on sight.
+
+## Assumptions that were never confirmed
+
+Flagged so they are not mistaken for requirements:
+
+- The rating scale defaults to classic 1.0–7.0 in 0.25 steps. "Classic padel
+  rating system" was the request; the scale is configurable via
+  `RATING_SCALE_PRESETS` in case the club means something else.
+- Cost is modelled as a price per court per 30 minutes, split by games played.
+  Per-player pricing or peak/off-peak rates would need a change.
+- Auth is one shared passcode. Anyone with it can act as any name. Fine for a
+  few organisers, not fine if this ever holds anything sensitive.
+- Nothing tracks whether a payment was actually collected — only the schedule.
+
+## Maintaining this file
+
+Update it in the same commit as the change that invalidates it: a new command, a
+new top-level directory, a new domain module, or a change to one of the four
+ideas above. Keep it about what is not obvious from reading the code.
