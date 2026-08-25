@@ -39,7 +39,13 @@ There is no ESLint setup; `npm run check` (typecheck + tests) is the gate.
 | Serve production build | `npm start` |
 
 `ADMIN_PASSCODE` and `SESSION_SECRET` must be set or nobody can sign in — see
-`.env.example`. `npm run build` needs them too.
+`.env.example`. The **build** does not need them: every route is server-rendered
+on demand, so they are only read at request time. Do not add dummy values to CI.
+
+CI (`.github/workflows/ci.yml`) runs `npm run check` then `npm run build` on
+Node 22 for every pull request. It calls the `check` script rather than
+inlining typecheck and test, so the CI gate cannot drift from the local one —
+if you add a step to `check`, CI picks it up.
 
 ## Layout
 
