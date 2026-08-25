@@ -1,0 +1,48 @@
+name: CI
+
+# Runs on every pull request, and on pushes to the trunk once main is the
+# default branch. The pull_request trigger is deliberately unfiltered so checks
+# run whatever branch a PR targets.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push supersedes an in-flight run on the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # better-sqlite3 is a native module, so this compiles or fetches a
+      # prebuild. Scripts must not be skipped.
+      - name: Install dependencies
+        run: npm ci
+
+      # Same gate as local development: typecheck plus the full test suite.
+      # Calling the script rather than inlining its steps keeps CI from drifting
+      # if the gate changes.
+      - name: Typecheck and test
+        run: npm run check
+
+      # The production build needs no secrets: every route is server-rendered on
+      # demand, so ADMIN_PASSCODE and SESSION_SECRET are only read at request
+      # time. Do not add dummy values here — it would imply they are required.
+      - name: Production build
+        run: npm run build
