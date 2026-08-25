@@ -167,3 +167,7 @@ pre.message {
 .courtrow .field { margin: 0; }
 
 .login-wrap { max-width: 380px; margin: 12vh auto; }
+
+.scorebox { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.scorebox input { width: 46px; padding: 4px 6px; text-align: center; font-variant-numeric: tabular-nums; }
+.scorebox .dash { color: var(--muted); font-size: 12px; }

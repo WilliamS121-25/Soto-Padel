@@ -1,10 +1,12 @@
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import Database from "better-sqlite3";
-import { SCHEMA } from "./schema";
-import { normaliseRating } from "@/domain/rating";
+import { ADDED_COLUMNS, SCHEMA } from "./schema";
+import { clampRating, normaliseRating } from "@/domain/rating";
+import type { PlayerRatingChange } from "@/domain/rating-updates";
 import type { MatchRecord } from "@/domain/history";
 import { HistoryIndex } from "@/domain/history";
+import { MAX_GAMES_PER_BLOCK } from "@/domain/types";
 import type {
   CourtBooking,
   Match,
@@ -35,7 +37,22 @@ function open(): Database.Database {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA);
+  addMissingColumns(db);
   return db;
+}
+
+/** Bring a database created by an earlier version up to the current shape. */
+function addMissingColumns(db: Database.Database): void {
+  for (const { table, column, type } of ADDED_COLUMNS) {
+    // Table and column names come from a hardcoded list, never from input.
+    const existing = db
+      .prepare<[], { name: string }>(`PRAGMA table_info(${table})`)
+      .all()
+      .map((row) => row.name);
+    if (!existing.includes(column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    }
+  }
 }
 
 export function getDb(): Database.Database {
@@ -135,12 +152,15 @@ export function setPlayerRating(
   newRating: number,
   admin: string,
   reason?: string | null,
+  options: { snap?: boolean } = {},
 ): void {
   const db = getDb();
   const existing = getPlayer(id);
   if (!existing) throw new Error(`Unknown player ${id}`);
 
-  const rating = normaliseRating(newRating);
+  // Manual changes come off a quarter-point dropdown and are snapped. Changes
+  // derived from results are not: they legitimately land between steps.
+  const rating = (options.snap ?? true) ? normaliseRating(newRating) : clampRating(newRating);
   if (rating === existing.rating) return;
 
   db.transaction(() => {
@@ -196,6 +216,7 @@ interface SessionRow {
   status: string;
   created_at: string;
   created_by: string;
+  ratings_applied_at: string | null;
 }
 
 interface CourtRow {
@@ -229,6 +250,7 @@ const toSession = (row: SessionRow): Session => ({
   status: row.status as SessionStatus,
   createdAt: row.created_at,
   createdBy: row.created_by,
+  ratingsAppliedAt: row.ratings_applied_at,
 });
 
 export function listSessions(): Session[] {
@@ -442,6 +464,8 @@ interface MatchRow {
   team_a2: string;
   team_b1: string;
   team_b2: string;
+  score_a: number | null;
+  score_b: number | null;
 }
 
 const toMatch = (row: MatchRow): Match => ({
@@ -449,6 +473,8 @@ const toMatch = (row: MatchRow): Match => ({
   courtNumber: row.court_number,
   teamA: [row.team_a1, row.team_a2] as const,
   teamB: [row.team_b1, row.team_b2] as const,
+  scoreA: row.score_a,
+  scoreB: row.score_b,
 });
 
 export function listMatches(sessionId: string): Match[] {
@@ -465,6 +491,8 @@ export function replaceMatches(sessionId: string, matches: Match[]): void {
   const db = getDb();
   db.transaction(() => {
     db.prepare("DELETE FROM matches WHERE session_id = ?").run(sessionId);
+    // Scores are deliberately not carried over: a regenerated draw puts
+    // different people on court, so any previously recorded result is void.
     const insert = db.prepare(
       `INSERT INTO matches (id, session_id, slot_index, court_number, team_a1, team_a2, team_b1, team_b2)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -515,3 +543,84 @@ export function listMatchRecords(excludeSessionId?: string): MatchRecord[] {
 export function buildHistoryIndex(excludeSessionId?: string): HistoryIndex {
   return new HistoryIndex(listMatchRecords(excludeSessionId));
 }
+
+/* ----------------------------------------------------------------- scores -- */
+
+/**
+ * Record the games each team won in one block.
+ *
+ * Identified by slot and court rather than by match id, because ids are
+ * reissued whenever a draw is regenerated while "court 3 at 19:00" is what the
+ * admin is actually looking at. Pass nulls to clear a score.
+ */
+export function setMatchScore(
+  sessionId: string,
+  slotIndex: number,
+  courtNumber: number,
+  scoreA: number | null,
+  scoreB: number | null,
+): void {
+  // Bounded on purpose: a 30-minute block cannot yield more than a handful of
+  // games, so "64" is a mistyped "6-4". Clamping keeps one slip from moving a
+  // rating by the maximum the cap allows.
+  const clean = (value: number | null) =>
+    value === null || !Number.isFinite(value)
+      ? null
+      : Math.min(MAX_GAMES_PER_BLOCK, Math.max(0, Math.trunc(value)));
+
+  getDb()
+    .prepare(
+      `UPDATE matches SET score_a = ?, score_b = ?
+       WHERE session_id = ? AND slot_index = ? AND court_number = ?`,
+    )
+    .run(clean(scoreA), clean(scoreB), sessionId, slotIndex, courtNumber);
+}
+
+/**
+ * Write the rating changes a session's results imply, once.
+ *
+ * Idempotent by design: the session records when its results were applied, and
+ * a second attempt is refused rather than double-counting every game. Each
+ * change lands in the rating history with the session named, so a player can
+ * always see which night moved them.
+ */
+export function applyRatingChanges(
+  sessionId: string,
+  changes: PlayerRatingChange[],
+  admin: string,
+  sessionLabel: string,
+): { applied: number; alreadyApplied: boolean } {
+  const db = getDb();
+  const session = getSession(sessionId);
+  if (!session) throw new Error(`Unknown session ${sessionId}`);
+  if (session.ratingsAppliedAt) return { applied: 0, alreadyApplied: true };
+
+  const material = changes.filter((change) => change.to !== change.from);
+
+  db.transaction(() => {
+    for (const change of material) {
+      const sign = change.delta > 0 ? "+" : "";
+      setPlayerRating(
+        change.playerId,
+        change.to,
+        admin,
+        `${sessionLabel}: ${sign}${change.delta.toFixed(2)} from ${change.gamesCounted} game${change.gamesCounted === 1 ? "" : "s"}`,
+        { snap: false },
+      );
+    }
+    db.prepare("UPDATE sessions SET ratings_applied_at = ? WHERE id = ?").run(nowIso(), sessionId);
+  })();
+
+  return { applied: material.length, alreadyApplied: false };
+}
+
+/**
+ * Applying is deliberately one-way, and there is no "un-apply" here.
+ *
+ * Re-running would measure the same results against ratings those results have
+ * already moved, counting every game twice. Doing it safely would mean storing
+ * each player's pre-session baseline so a re-run could start from it, which is
+ * more machinery than a mistyped score is worth. A wrong score after the fact is
+ * corrected by editing the player's rating directly, which is already audited in
+ * the rating history.
+ */

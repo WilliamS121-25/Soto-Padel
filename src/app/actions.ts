@@ -6,7 +6,13 @@ import * as db from "@/db";
 import { parseSignupText } from "@/domain/parse-signups";
 import { normaliseRating } from "@/domain/rating";
 import { generateSchedule } from "@/domain/scheduler";
+import {
+  materialRatingChanges,
+  ratingChangesFromResults,
+  type MatchResult,
+} from "@/domain/rating-updates";
 import { parseTime } from "@/domain/time";
+import { formatDateLong } from "@/domain/time";
 import { FACILITY_COURTS, type CourtBooking, type PaymentMethod, type SessionStatus } from "@/domain/types";
 import { parseMoney } from "@/domain/payments";
 import { getAdmin, passcodeMatches, requireAdmin, signIn, signOut } from "@/lib/auth";
@@ -436,4 +442,87 @@ export async function clearScheduleAction(form: FormData): Promise<void> {
 /** Exposed for pages that want to show who is signed in without importing auth. */
 export async function currentAdmin(): Promise<string | null> {
   return getAdmin();
+}
+
+/* ------------------------------------------------------------------ scores */
+
+/** Record (or clear) the games each team won in one block. */
+export async function setScoreAction(form: FormData): Promise<void> {
+  await requireAdmin();
+  const sessionId = str(form, "sessionId");
+  const slotIndex = int(form, "slotIndex", -1);
+  const courtNumber = int(form, "courtNumber", -1);
+  if (slotIndex < 0 || courtNumber < 0) {
+    backTo(`/sessions/${sessionId}`, { error: "Could not tell which game that score was for." });
+  }
+
+  const rawA = str(form, "scoreA");
+  const rawB = str(form, "scoreB");
+
+  // Both blank clears the result; one blank is almost certainly a slip.
+  if (rawA === "" && rawB === "") {
+    db.setMatchScore(sessionId, slotIndex, courtNumber, null, null);
+  } else if (rawA === "" || rawB === "") {
+    backTo(`/sessions/${sessionId}`, { error: "Enter games for both teams, or leave both blank." });
+  } else {
+    db.setMatchScore(sessionId, slotIndex, courtNumber, Number(rawA), Number(rawB));
+  }
+
+  revalidatePath(`/sessions/${sessionId}`);
+  backTo(`/sessions/${sessionId}`, { notice: "Score saved." });
+}
+
+/**
+ * Turn the recorded results into rating changes.
+ *
+ * Deliberately a single explicit step rather than something that fires as each
+ * score is typed. Ratings feed the draw, so moving them mid-evening would change
+ * the line-ups already on court, and a one-shot apply gives the admin a preview
+ * to check before anything moves. It can only run once per mixin.
+ */
+export async function applyRatingsAction(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const sessionId = str(form, "sessionId");
+  const session = db.getSession(sessionId);
+  if (!session) backTo("/", { error: "That mixin no longer exists." });
+
+  if (session.ratingsAppliedAt) {
+    backTo(`/sessions/${sessionId}`, {
+      error: "Ratings have already been updated from this mixin.",
+    });
+  }
+
+  const results: MatchResult[] = db.listMatches(sessionId).map((match) => ({
+    teamA: match.teamA,
+    teamB: match.teamB,
+    gamesA: match.scoreA ?? 0,
+    gamesB: match.scoreB ?? 0,
+  }));
+
+  const changes = ratingChangesFromResults(
+    results,
+    new Map(db.listPlayers(true).map((player) => [player.id, player.rating])),
+  );
+  const material = materialRatingChanges(changes);
+
+  if (material.length === 0) {
+    backTo(`/sessions/${sessionId}`, {
+      error: "No scores recorded yet, or the results imply no rating change.",
+    });
+  }
+
+  const { applied, alreadyApplied } = db.applyRatingChanges(
+    sessionId,
+    changes,
+    admin,
+    `${session.name} (${formatDateLong(session.date)})`,
+  );
+
+  revalidatePath(`/sessions/${sessionId}`);
+  revalidatePath("/players");
+  backTo(`/sessions/${sessionId}`, {
+    notice: alreadyApplied
+      ? "Ratings had already been updated from this mixin."
+      : `Updated ${applied} player rating${applied === 1 ? "" : "s"} from the results.`,
+  });
 }

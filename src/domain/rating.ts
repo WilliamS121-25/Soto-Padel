@@ -43,3 +43,17 @@ export function ratingBand(value: number, scale: RatingScale = DEFAULT_RATING_SC
   if (position < 0.75) return "Advanced";
   return "Elite";
 }
+
+/**
+ * Clamp a rating into the scale without snapping it to a step.
+ *
+ * Manual rating changes come off a dropdown and land on clean quarter points.
+ * Ratings derived from results do not: a night's play might move someone by
+ * 0.13, and forcing that onto the nearest quarter would either overstate the
+ * move or throw it away entirely, so a rating earned from results is allowed to
+ * sit between steps. Two decimals is the stored precision.
+ */
+export function clampRating(value: number, scale: RatingScale = DEFAULT_RATING_SCALE): number {
+  if (!Number.isFinite(value)) throw new Error("Rating must be a finite number");
+  return Number(Math.min(scale.max, Math.max(scale.min, value)).toFixed(2));
+}

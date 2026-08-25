@@ -2,6 +2,12 @@
 
 export const PLAYERS_PER_COURT = 4;
 
+/**
+ * Most games one team can win in a single 30-minute block. Used to reject
+ * mistyped scores such as "64" for "6-4".
+ */
+export const MAX_GAMES_PER_BLOCK = 20;
+
 /** The club has 5 physical courts. */
 export const FACILITY_COURTS = [1, 2, 3, 4, 5] as const;
 
@@ -77,6 +83,12 @@ export interface Session {
   status: SessionStatus;
   createdAt: string;
   createdBy: string;
+  /**
+   * When the results were turned into rating changes, or null if they have not
+   * been. Applying twice would double-count every result, so this is what makes
+   * it a one-way step.
+   */
+  ratingsAppliedAt: string | null;
 }
 
 export type SignupStatus = "CONFIRMED" | "RESERVE" | "WITHDRAWN";
@@ -111,6 +123,13 @@ export interface Match {
   courtNumber: number;
   teamA: readonly [string, string];
   teamB: readonly [string, string];
+  /**
+   * Games won by each team, once a result has been recorded. Absent on a
+   * freshly generated draw, and cleared when a draw is regenerated — a new
+   * draw means these players never played that block.
+   */
+  scoreA?: number | null;
+  scoreB?: number | null;
 }
 
 export interface Round {

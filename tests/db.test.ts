@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { ratingChangesFromResults } from "@/domain/rating-updates";
 import { parseTime } from "@/domain/time";
 
 /**
@@ -250,5 +251,133 @@ describe("matches and history", () => {
 
     // Excluding the session being rescheduled leaves its own draw out.
     expect(db.buildHistoryIndex(session.id).partnerCount(ids[0], ids[2])).toBe(0);
+  });
+});
+
+describe("scores and automatic rating changes", () => {
+  function makeScoredSession(name: string, ratingValue = 4) {
+    const players = ["A", "B", "C", "D"].map((n) =>
+      db.createPlayer({ name: `${name} ${n}`, rating: ratingValue }, "will"),
+    );
+    const ids = players.map((p) => p.id) as [string, string, string, string];
+    const session = db.createSession(
+      {
+        name,
+        date: "2026-01-09",
+        startMinutes: parseTime("18:00"),
+        slotCount: 1,
+        costPerCourtSlot: 600,
+        courts: [{ courtNumber: 1, startMinutes: parseTime("18:00"), slotCount: 1 }],
+      },
+      "will",
+    );
+    db.replaceMatches(session.id, [
+      { slotIndex: 0, courtNumber: 1, teamA: [ids[0], ids[1]], teamB: [ids[2], ids[3]] },
+    ]);
+    return { session, ids };
+  }
+
+  it("stores and clears a score", () => {
+    const { session } = makeScoredSession("Score Store");
+    expect(db.listMatches(session.id)[0]?.scoreA).toBeNull();
+
+    db.setMatchScore(session.id, 0, 1, 6, 3);
+    expect(db.listMatches(session.id)[0]).toMatchObject({ scoreA: 6, scoreB: 3 });
+
+    db.setMatchScore(session.id, 0, 1, null, null);
+    expect(db.listMatches(session.id)[0]?.scoreA).toBeNull();
+  });
+
+  it("rejects a mistyped score rather than letting it wreck a rating", () => {
+    const { session } = makeScoredSession("Typo Guard");
+    db.setMatchScore(session.id, 0, 1, 64, -3);
+    expect(db.listMatches(session.id)[0]).toMatchObject({ scoreA: 20, scoreB: 0 });
+  });
+
+  it("wipes scores when the draw is regenerated", () => {
+    const { session, ids } = makeScoredSession("Regen Wipe");
+    db.setMatchScore(session.id, 0, 1, 6, 3);
+
+    db.replaceMatches(session.id, [
+      { slotIndex: 0, courtNumber: 1, teamA: [ids[0], ids[2]], teamB: [ids[1], ids[3]] },
+    ]);
+    expect(db.listMatches(session.id)[0]?.scoreA).toBeNull();
+  });
+
+  it("applies rating changes once and records why in the history", () => {
+    const { session, ids } = makeScoredSession("Apply Once");
+    db.setMatchScore(session.id, 0, 1, 6, 1);
+
+    const matches = db.listMatches(session.id);
+    const changes = ratingChangesFromResults(
+      matches.map((m) => ({
+        teamA: m.teamA,
+        teamB: m.teamB,
+        gamesA: m.scoreA ?? 0,
+        gamesB: m.scoreB ?? 0,
+      })),
+      new Map(db.listPlayers(true).map((p) => [p.id, p.rating])),
+    );
+
+    const result = db.applyRatingChanges(session.id, changes, "will", "Apply Once (2026-01-09)");
+    expect(result).toMatchObject({ alreadyApplied: false });
+    expect(result.applied).toBeGreaterThan(0);
+
+    // Winners went up, losers came down.
+    expect(db.getPlayer(ids[0])!.rating).toBeGreaterThan(4);
+    expect(db.getPlayer(ids[2])!.rating).toBeLessThan(4);
+
+    const history = db.listRatingHistory(ids[0]);
+    expect(history[0]?.reason).toContain("Apply Once");
+    expect(history[0]?.reason).toMatch(/from 1 game/);
+    expect(history[0]?.changedBy).toBe("will");
+
+    // The session now knows it has been applied.
+    expect(db.getSession(session.id)?.ratingsAppliedAt).not.toBeNull();
+  });
+
+  it("refuses to apply the same results twice", () => {
+    const { session, ids } = makeScoredSession("Apply Twice");
+    db.setMatchScore(session.id, 0, 1, 6, 0);
+
+    const build = () =>
+      ratingChangesFromResults(
+        db.listMatches(session.id).map((m) => ({
+          teamA: m.teamA,
+          teamB: m.teamB,
+          gamesA: m.scoreA ?? 0,
+          gamesB: m.scoreB ?? 0,
+        })),
+        new Map(db.listPlayers(true).map((p) => [p.id, p.rating])),
+      );
+
+    db.applyRatingChanges(session.id, build(), "will", "Apply Twice");
+    const afterFirst = db.getPlayer(ids[0])!.rating;
+    const historyLength = db.listRatingHistory(ids[0]).length;
+
+    const second = db.applyRatingChanges(session.id, build(), "will", "Apply Twice");
+    expect(second).toEqual({ applied: 0, alreadyApplied: true });
+    expect(db.getPlayer(ids[0])!.rating).toBe(afterFirst);
+    expect(db.listRatingHistory(ids[0])).toHaveLength(historyLength);
+  });
+
+  it("stores an automatic rating off the quarter-point grid", () => {
+    const { session, ids } = makeScoredSession("Off Grid", 4);
+    db.setMatchScore(session.id, 0, 1, 6, 4);
+    const changes = ratingChangesFromResults(
+      db.listMatches(session.id).map((m) => ({
+        teamA: m.teamA,
+        teamB: m.teamB,
+        gamesA: m.scoreA ?? 0,
+        gamesB: m.scoreB ?? 0,
+      })),
+      new Map(db.listPlayers(true).map((p) => [p.id, p.rating])),
+    );
+    db.applyRatingChanges(session.id, changes, "will", "Off Grid");
+
+    // A manual change would snap to 4.25; a derived one keeps its real value.
+    const rating = db.getPlayer(ids[0])!.rating;
+    expect(rating).toBeGreaterThan(4);
+    expect(rating).toBeLessThan(4.25);
   });
 });

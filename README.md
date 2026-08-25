@@ -53,6 +53,10 @@ sensibly.
 7. **Collect the money.** Set each person's payment method in the signups table,
    then copy the payment schedule. It groups people under Reception, Revolut and
    Playtomic, and chases anyone who has not chosen.
+8. **Record the scores.** Type the games each team won next to each block. When
+   you are done, *Apply these rating changes* moves everyone's rating based on
+   how they actually played. You see exactly what will change before anything
+   moves.
 
 ## How places are counted
 
@@ -89,12 +93,39 @@ differently.
 ## Ratings
 
 Ratings drive the matching. The default scale is the classic **1.0–7.0 in 0.25
-steps**. Change a rating whenever a player's level moves; every change is kept
-with the date, the reason and who made it, so you can see how someone got where
-they are.
+steps**. Every change is kept with the date, the reason and who made it, so you
+can always see how someone got where they are.
+
+Ratings move two ways.
+
+**By hand**, on the player's page, whenever you judge that someone's level has
+moved. These land on clean quarter points.
+
+**From results.** Enter the games each team won for each block, then apply the
+changes at the end of the night. Three things shape how far a rating moves:
+
+- **The margin, not just the win.** A 6-5 says far less than a 6-0.
+- **Who you were playing.** Beating a stronger pair moves you more; beating a
+  much weaker pair barely moves you at all. A result landing exactly where the
+  ratings predicted moves nobody.
+- **How much you played.** Every scored block counts, so a whole evening of
+  over-performing adds up.
+
+In practice, winning every block 6-3 against evenly matched pairs moves a player
+about **0.17** over a four-game evening, so two or three such nights cross a
+quarter-point step. A single session can never move a rating by more than
+**0.5**, which stops one freak result rewriting someone's level. Ratings derived
+this way are allowed to sit between steps: 4.09 is a real rating.
+
+Two things worth knowing. Applying is a **one-way step per mixin** — the same
+games cannot be counted twice, and a mistyped score is corrected afterwards by
+editing that player's rating by hand. And regenerating a draw **clears any
+scores on it**, because a new draw means those players never played that block.
 
 If your club uses a different scale, `RATING_SCALE_PRESETS` in
-`src/domain/types.ts` has Playtomic-style 0.0–7.0 and a 1–10 ladder.
+`src/domain/types.ts` has Playtomic-style 0.0–7.0 and a 1–10 ladder. How fast
+ratings move is `DEFAULT_RATING_UPDATE_OPTIONS` in
+`src/domain/rating-updates.ts`.
 
 ## Payment
 
@@ -133,5 +164,9 @@ Back up by copying the SQLite file.
   needs no Business API, no approved templates, and no phone number.
 - **It does not take payments.** It works out who owes what; the money moves
   through reception, Revolut or Playtomic as it does today.
-- **It does not record scores.** History tracks who played with and against whom,
-  which is what the draw needs. Ratings are changed by hand.
+- **It does not model full padel scoring.** A 30-minute block is recorded as
+  the games each team won, not points, sets or tiebreaks. That is the only
+  number an organiser realistically writes down, and it is all the rating
+  maths needs.
+- **It does not rank or run leagues.** There are no standings, no titles and no
+  win-loss records - only ratings, which exist to make the next draw better.
