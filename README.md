@@ -12,23 +12,19 @@ accounts to provision.
 
 ```bash
 npm install
-cp .env.example .env       # then edit it — see below
 npm run dev                # http://localhost:3000
 ```
 
-`.env` needs two values before anyone can sign in:
+That is the whole setup. The SQLite database is created on first use at
+`./data/soto-padel.db`, or wherever `DATABASE_PATH` points.
 
-| Variable | What it is |
-| --- | --- |
-| `ADMIN_PASSCODE` | The passcode you give the organisers. Until it is set, nobody can sign in. |
-| `SESSION_SECRET` | Any long random string; signs the login cookie. Changing it signs everyone out. |
-| `DATABASE_PATH` | Where the SQLite file lives. Defaults to `./data/soto-padel.db`. |
+**There is no sign-in.** Anyone who can reach the app can use it, and can read
+and change everything in it — including player phone numbers, ratings and
+payment schedules. Keep it on a private network, behind your host's access
+control, or on a URL you only give to the organisers.
 
-Generate a secret with `openssl rand -base64 32`.
-
-Everyone signs in with the same passcode and types their own name. The name is
-not a password — it just records who changed what, so rating history reads
-sensibly.
+The name in the top right is recorded against changes so the rating history
+reads sensibly. It is not a password and anyone can set it to anything.
 
 ## Running a mixin
 
@@ -164,7 +160,6 @@ A `Dockerfile` is included and works on any of these.
 ```bash
 fly launch --no-deploy                          # create the app, keep fly.toml
 fly volumes create soto_data --size 1 --region lhr
-fly secrets set ADMIN_PASSCODE=... SESSION_SECRET=...
 fly deploy
 ```
 
@@ -175,7 +170,6 @@ fly deploy
 Point the service at this repo; both detect the `Dockerfile`. Then:
 
 - attach a **volume / disk mounted at `/data`**
-- set `ADMIN_PASSCODE` and `SESSION_SECRET`
 - leave `DATABASE_PATH` as `/data/soto-padel.db` (the Dockerfile's default)
 
 ### A plain VPS
@@ -184,7 +178,6 @@ Point the service at this repo; both detect the `Dockerfile`. Then:
 docker build -t soto-padel .
 docker run -d --restart unless-stopped -p 80:3000 \
   -v /srv/soto-padel:/data \
-  -e ADMIN_PASSCODE=... -e SESSION_SECRET=... \
   soto-padel
 ```
 
@@ -195,8 +188,8 @@ docker run -d --restart unless-stopped -p 80:3000 \
   of `src/domain/` stays as it is).
 - **Back up by copying the database file**, e.g.
   `fly ssh console -C "cp /data/soto-padel.db /data/backup.db"` then download it.
-- Without `ADMIN_PASSCODE` and `SESSION_SECRET` set, nobody can sign in — the
-  login page says which one is missing.
+- **There is no sign-in**, so whoever can reach the URL can change everything.
+  Put it behind your host's access control if that matters.
 
 ## What it deliberately does not do
 

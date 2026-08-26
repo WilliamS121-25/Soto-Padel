@@ -21,7 +21,6 @@ import {
   scheduleMessage,
   signupOpenMessage,
 } from "@/domain/whatsapp";
-import { requireAdmin } from "@/lib/auth";
 import {
   addSignupAction,
   applyRatingsAction,
@@ -46,7 +45,6 @@ export default async function SessionPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ error?: string; notice?: string }>;
 }) {
-  await requireAdmin();
   const { id } = await params;
   const { error, notice } = await searchParams;
 

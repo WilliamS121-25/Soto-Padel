@@ -1,7 +1,6 @@
 import Link from "next/link";
 import * as db from "@/db";
 import { formatRating, ratingBand, ratingOptions } from "@/domain/rating";
-import { requireAdmin } from "@/lib/auth";
 import { createPlayerAction } from "../actions";
 
 export default async function PlayersPage({
@@ -9,7 +8,6 @@ export default async function PlayersPage({
 }: {
   searchParams: Promise<{ error?: string; notice?: string }>;
 }) {
-  await requireAdmin();
   const { error, notice } = await searchParams;
   const players = db.listPlayers(true);
   const history = db.buildHistoryIndex();

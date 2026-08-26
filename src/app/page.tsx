@@ -3,7 +3,6 @@ import * as db from "@/db";
 import { allocateSignups } from "@/domain/signups";
 import { formatDateLong, formatSlotCount, formatTime } from "@/domain/time";
 import { computeCapacity } from "@/domain/timeline";
-import { requireAdmin } from "@/lib/auth";
 import { createSessionAction } from "./actions";
 import { CourtPicker } from "./court-picker";
 
@@ -20,7 +19,6 @@ export default async function DashboardPage({
 }: {
   searchParams: Promise<{ error?: string; notice?: string }>;
 }) {
-  await requireAdmin();
   const { error, notice } = await searchParams;
   const sessions = db.listSessions();
 

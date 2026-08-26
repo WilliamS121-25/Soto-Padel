@@ -14,8 +14,7 @@ FROM node:22-slim AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# The build reads no secrets: every route is server-rendered on demand, so
-# ADMIN_PASSCODE and SESSION_SECRET are only needed at runtime.
+# The build needs no configuration: every route is server-rendered on demand.
 RUN npm run build
 
 FROM node:22-slim AS runtime

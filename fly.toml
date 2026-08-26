@@ -3,8 +3,10 @@
 #
 #   fly launch --no-deploy            # once, to create the app
 #   fly volumes create soto_data --size 1 --region lhr
-#   fly secrets set ADMIN_PASSCODE=... SESSION_SECRET=...
 #   fly deploy
+#
+# There is no sign-in, so anyone who can reach the app can change everything.
+# Restrict access at the host if that matters.
 
 app = "soto-padel"
 primary_region = "lhr"

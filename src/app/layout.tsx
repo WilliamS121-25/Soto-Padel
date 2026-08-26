@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import "./globals.css";
-import { getAdmin } from "@/lib/auth";
-import { signOutAction } from "./actions";
+import { adminName } from "@/lib/admin";
+import { setNameAction } from "./actions";
 import { NavLinks } from "./nav";
 
 export const metadata: Metadata = {
@@ -11,29 +11,42 @@ export const metadata: Metadata = {
 };
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
-  const admin = await getAdmin();
+  const admin = await adminName();
 
   return (
     <html lang="en">
       <body>
-        {admin && (
-          <header className="masthead">
-            <div className="masthead-inner">
-              <div className="brand">
-                Soto <span>Padel</span>
-              </div>
-              <NavLinks />
-              <div className="whoami">
-                <span>{admin}</span>
-                <form action={signOutAction}>
-                  <button type="submit" className="link">
-                    Sign out
-                  </button>
-                </form>
-              </div>
+        <header className="masthead">
+          <div className="masthead-inner">
+            <div className="brand">
+              Soto <span>Padel</span>
             </div>
-          </header>
-        )}
+            <NavLinks />
+
+            {/*
+              A display name, not a sign-in. It is recorded against changes so
+              the rating history reads sensibly; it guards nothing.
+            */}
+            <details className="whoami">
+              <summary title="Change the name recorded against your changes">{admin}</summary>
+              <form action={setNameAction} className="whoami-form">
+                <label htmlFor="admin-name">Recorded against your changes</label>
+                <div className="whoami-row">
+                  <input
+                    id="admin-name"
+                    name="name"
+                    defaultValue={admin}
+                    maxLength={40}
+                    placeholder="e.g. William"
+                  />
+                  <button type="submit" className="primary">
+                    Save
+                  </button>
+                </div>
+              </form>
+            </details>
+          </div>
+        </header>
         <main>{children}</main>
       </body>
     </html>

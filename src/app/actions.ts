@@ -15,7 +15,7 @@ import { parseTime } from "@/domain/time";
 import { formatDateLong } from "@/domain/time";
 import { FACILITY_COURTS, type CourtBooking, type PaymentMethod, type SessionStatus } from "@/domain/types";
 import { parseMoney } from "@/domain/payments";
-import { checkSignIn, getAdmin, requireAdmin, signIn, signOut } from "@/lib/auth";
+import { adminName, setAdminName } from "@/lib/admin";
 
 /* ------------------------------------------------------------- form helpers */
 
@@ -61,30 +61,26 @@ function readCourts(form: FormData, fallbackStart: number, fallbackSlots: number
   return courts;
 }
 
-/* -------------------------------------------------------------------- auth  */
+/* ------------------------------------------------------------------- name  */
 
-export async function loginAction(form: FormData): Promise<void> {
-  const name = str(form, "name");
-  const passcode = str(form, "passcode");
-
-  // The page turns the code into a message, so the reason survives the redirect
-  // without putting prose in the URL.
-  const problem = checkSignIn(name, passcode);
-  if (problem) backTo("/login", { problem });
-
-  await signIn(name);
-  redirect("/");
-}
-
-export async function signOutAction(): Promise<void> {
-  await signOut();
-  redirect("/login");
+/**
+ * Set the display name recorded against changes.
+ *
+ * Not a sign-in. It guards nothing, is not checked against anything, and anyone
+ * can set it to anything; it exists so the rating history can say who made a
+ * change.
+ */
+export async function setNameAction(form: FormData): Promise<void> {
+  await setAdminName(str(form, "name"));
+  // The name shows in the layout, so the whole tree needs refreshing.
+  revalidatePath("/", "layout");
+  redirect(str(form, "returnTo") || "/");
 }
 
 /* ------------------------------------------------------------------ players */
 
 export async function createPlayerAction(form: FormData): Promise<void> {
-  const admin = await requireAdmin();
+  const admin = await adminName();
   const name = str(form, "name");
   if (!name) backTo("/players", { error: "A player needs a name." });
 
@@ -100,7 +96,7 @@ export async function createPlayerAction(form: FormData): Promise<void> {
 }
 
 export async function setRatingAction(form: FormData): Promise<void> {
-  const admin = await requireAdmin();
+  const admin = await adminName();
   const playerId = str(form, "playerId");
   const rating = Number(str(form, "rating"));
   if (!playerId || !Number.isFinite(rating)) backTo("/players", { error: "Could not read that rating." });
@@ -112,7 +108,6 @@ export async function setRatingAction(form: FormData): Promise<void> {
 }
 
 export async function updatePlayerAction(form: FormData): Promise<void> {
-  await requireAdmin();
   const playerId = str(form, "playerId");
   if (!playerId) backTo("/players", { error: "Unknown player." });
 
@@ -130,7 +125,7 @@ export async function updatePlayerAction(form: FormData): Promise<void> {
 /* ----------------------------------------------------------------- sessions */
 
 export async function createSessionAction(form: FormData): Promise<void> {
-  const admin = await requireAdmin();
+  const admin = await adminName();
 
   const name = str(form, "name") || "Social Mixin";
   const date = str(form, "date");
@@ -166,7 +161,6 @@ export async function createSessionAction(form: FormData): Promise<void> {
 }
 
 export async function updateSessionAction(form: FormData): Promise<void> {
-  await requireAdmin();
   const sessionId = str(form, "sessionId");
   const existing = db.getSession(sessionId);
   if (!existing) backTo("/", { error: "That mixin no longer exists." });
@@ -212,7 +206,6 @@ export async function updateSessionAction(form: FormData): Promise<void> {
 }
 
 export async function deleteSessionAction(form: FormData): Promise<void> {
-  await requireAdmin();
   const sessionId = str(form, "sessionId");
   db.deleteSession(sessionId);
   revalidatePath("/");
@@ -222,7 +215,7 @@ export async function deleteSessionAction(form: FormData): Promise<void> {
 /* ------------------------------------------------------------------ signups */
 
 export async function addSignupAction(form: FormData): Promise<void> {
-  const admin = await requireAdmin();
+  const admin = await adminName();
   const sessionId = str(form, "sessionId");
   const session = db.getSession(sessionId);
   if (!session) backTo("/", { error: "That mixin no longer exists." });
@@ -273,7 +266,7 @@ export async function addSignupAction(form: FormData): Promise<void> {
  * listed back so the admin can check it.
  */
 export async function importSignupsAction(form: FormData): Promise<void> {
-  const admin = await requireAdmin();
+  const admin = await adminName();
   const sessionId = str(form, "sessionId");
   const session = db.getSession(sessionId);
   if (!session) backTo("/", { error: "That mixin no longer exists." });
@@ -342,7 +335,6 @@ export async function importSignupsAction(form: FormData): Promise<void> {
 }
 
 export async function updateSignupAction(form: FormData): Promise<void> {
-  await requireAdmin();
   const sessionId = str(form, "sessionId");
   const signupId = str(form, "signupId");
 
@@ -369,7 +361,6 @@ export async function updateSignupAction(form: FormData): Promise<void> {
 
 /** Marks someone as unable to attend; reserves move up automatically. */
 export async function withdrawSignupAction(form: FormData): Promise<void> {
-  await requireAdmin();
   const sessionId = str(form, "sessionId");
   db.updateSignup(str(form, "signupId"), { status: "WITHDRAWN" });
   revalidatePath(`/sessions/${sessionId}`);
@@ -379,7 +370,6 @@ export async function withdrawSignupAction(form: FormData): Promise<void> {
 }
 
 export async function restoreSignupAction(form: FormData): Promise<void> {
-  await requireAdmin();
   const sessionId = str(form, "sessionId");
   db.updateSignup(str(form, "signupId"), { status: "CONFIRMED" });
   revalidatePath(`/sessions/${sessionId}`);
@@ -387,7 +377,6 @@ export async function restoreSignupAction(form: FormData): Promise<void> {
 }
 
 export async function removeSignupAction(form: FormData): Promise<void> {
-  await requireAdmin();
   const sessionId = str(form, "sessionId");
   db.removeSignup(str(form, "signupId"));
   revalidatePath(`/sessions/${sessionId}`);
@@ -397,7 +386,6 @@ export async function removeSignupAction(form: FormData): Promise<void> {
 /* ---------------------------------------------------------------- schedule  */
 
 export async function generateScheduleAction(form: FormData): Promise<void> {
-  await requireAdmin();
   const sessionId = str(form, "sessionId");
   const session = db.getSession(sessionId);
   if (!session) backTo("/", { error: "That mixin no longer exists." });
@@ -434,23 +422,21 @@ export async function generateScheduleAction(form: FormData): Promise<void> {
 }
 
 export async function clearScheduleAction(form: FormData): Promise<void> {
-  await requireAdmin();
   const sessionId = str(form, "sessionId");
   db.replaceMatches(sessionId, []);
   revalidatePath(`/sessions/${sessionId}`);
   backTo(`/sessions/${sessionId}`, { notice: "Line-ups cleared." });
 }
 
-/** Exposed for pages that want to show who is signed in without importing auth. */
-export async function currentAdmin(): Promise<string | null> {
-  return getAdmin();
+/** Exposed for pages that want the current display name. */
+export async function currentAdmin(): Promise<string> {
+  return adminName();
 }
 
 /* ------------------------------------------------------------------ scores */
 
 /** Record (or clear) the games each team won in one block. */
 export async function setScoreAction(form: FormData): Promise<void> {
-  await requireAdmin();
   const sessionId = str(form, "sessionId");
   const slotIndex = int(form, "slotIndex", -1);
   const courtNumber = int(form, "courtNumber", -1);
@@ -483,7 +469,7 @@ export async function setScoreAction(form: FormData): Promise<void> {
  * to check before anything moves. It can only run once per mixin.
  */
 export async function applyRatingsAction(form: FormData): Promise<void> {
-  const admin = await requireAdmin();
+  const admin = await adminName();
   const sessionId = str(form, "sessionId");
   const session = db.getSession(sessionId);
   if (!session) backTo("/", { error: "That mixin no longer exists." });

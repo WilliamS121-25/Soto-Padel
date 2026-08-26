@@ -2,7 +2,6 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import * as db from "@/db";
 import { formatRating, ratingBand, ratingOptions } from "@/domain/rating";
-import { requireAdmin } from "@/lib/auth";
 import { setRatingAction, updatePlayerAction } from "../../actions";
 
 export default async function PlayerPage({
@@ -12,7 +11,6 @@ export default async function PlayerPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ error?: string; notice?: string }>;
 }) {
-  await requireAdmin();
   const { id } = await params;
   const { error, notice } = await searchParams;
 
