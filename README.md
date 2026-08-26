@@ -153,12 +153,30 @@ anywhere, serverless included.
 
 ### Vercel
 
-1. Push the repo and import it.
-2. In the project, **Storage → Create Database → Postgres**. Vercel sets the
-   connection string for you; there is nothing to copy.
-3. Deploy. The schema is created on first boot.
+The app needs one environment variable, `DATABASE_URL`. Any Postgres will do.
 
-Nothing else is required — no secrets, no volume, no build configuration.
+Vercel offers databases through a marketplace of providers rather than its own
+Postgres product, and that dashboard changes; if **Storage → Create Database**
+offers a Postgres (Neon, Supabase and others appear there), take it, and Vercel
+sets the connection string for you.
+
+If it does not, set the variable yourself — this works whatever the dashboard
+looks like:
+
+1. Create a free Postgres at [neon.tech](https://neon.tech) or
+   [supabase.com](https://supabase.com).
+2. Copy the **pooled** connection string. On Neon that is the one with
+   `-pooler` in the hostname; it matters on serverless, where every instance
+   otherwise opens its own connection and exhausts the limit.
+3. In Vercel: **Project → Settings → Environment Variables**, add
+   `DATABASE_URL` with that value, for all environments.
+4. Redeploy.
+
+The schema is created on first boot. Nothing else is required — no other
+secrets, no volume, no build configuration.
+
+If the app cannot reach the database it says so on screen, naming the error and
+what to change, with the credentials stripped out of the URL.
 
 ### Anywhere else, with a managed Postgres
 
