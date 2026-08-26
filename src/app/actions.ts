@@ -15,7 +15,7 @@ import { parseTime } from "@/domain/time";
 import { formatDateLong } from "@/domain/time";
 import { FACILITY_COURTS, type CourtBooking, type PaymentMethod, type SessionStatus } from "@/domain/types";
 import { parseMoney } from "@/domain/payments";
-import { getAdmin, passcodeMatches, requireAdmin, signIn, signOut } from "@/lib/auth";
+import { checkSignIn, getAdmin, requireAdmin, signIn, signOut } from "@/lib/auth";
 
 /* ------------------------------------------------------------- form helpers */
 
@@ -67,8 +67,10 @@ export async function loginAction(form: FormData): Promise<void> {
   const name = str(form, "name");
   const passcode = str(form, "passcode");
 
-  if (!name) backTo("/login", { error: "Enter your name so changes can be attributed." });
-  if (!passcodeMatches(passcode)) backTo("/login", { error: "That passcode is not right." });
+  // The page turns the code into a message, so the reason survives the redirect
+  // without putting prose in the URL.
+  const problem = checkSignIn(name, passcode);
+  if (problem) backTo("/login", { problem });
 
   await signIn(name);
   redirect("/");
