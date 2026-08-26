@@ -1,5 +1,8 @@
-# Fly.io deployment. The volume is the whole point: without it the SQLite
-# database lives in the container filesystem and is lost on every restart.
+# Fly.io deployment, running Postgres in-process against a volume.
+#
+# The volume is the whole point: without it the database lives in the container
+# filesystem and is lost on every restart. Alternatively set DATABASE_URL with
+# `fly secrets set` to use a managed Postgres, and the volume becomes optional.
 #
 #   fly launch --no-deploy            # once, to create the app
 #   fly volumes create soto_data --size 1 --region lhr
@@ -16,7 +19,7 @@ primary_region = "lhr"
 
 [env]
   PORT = "3000"
-  DATABASE_PATH = "/data/soto-padel.db"
+  DATABASE_PATH = "/data/postgres"
 
 [mounts]
   source = "soto_data"
@@ -25,8 +28,8 @@ primary_region = "lhr"
 [http_service]
   internal_port = 3000
   force_https = true
-  # SQLite has a single writer and the database lives on one volume, so the app
-  # must not be scaled to multiple machines without moving to Postgres first.
+  # The in-process database lives on one volume, so the app must not be scaled
+  # to multiple machines unless DATABASE_URL points at a shared Postgres.
   auto_stop_machines = "suspend"
   auto_start_machines = true
   min_machines_running = 1

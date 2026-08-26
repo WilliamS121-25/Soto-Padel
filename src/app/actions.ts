@@ -87,7 +87,7 @@ export async function createPlayerAction(form: FormData): Promise<void> {
   const rating = Number(str(form, "rating"));
   if (!Number.isFinite(rating)) backTo("/players", { error: "Pick a rating for the player." });
 
-  db.createPlayer(
+  await db.createPlayer(
     { name, rating, phone: str(form, "phone") || null, notes: str(form, "notes") || null },
     admin,
   );
@@ -101,7 +101,7 @@ export async function setRatingAction(form: FormData): Promise<void> {
   const rating = Number(str(form, "rating"));
   if (!playerId || !Number.isFinite(rating)) backTo("/players", { error: "Could not read that rating." });
 
-  db.setPlayerRating(playerId, normaliseRating(rating), admin, str(form, "reason") || null);
+  await db.setPlayerRating(playerId, normaliseRating(rating), admin, str(form, "reason") || null);
   revalidatePath("/players");
   revalidatePath(`/players/${playerId}`);
   backTo(`/players/${playerId}`, { notice: "Rating updated." });
@@ -111,7 +111,7 @@ export async function updatePlayerAction(form: FormData): Promise<void> {
   const playerId = str(form, "playerId");
   if (!playerId) backTo("/players", { error: "Unknown player." });
 
-  db.updatePlayer(playerId, {
+  await db.updatePlayer(playerId, {
     name: str(form, "name") || undefined,
     phone: str(form, "phone") || null,
     notes: str(form, "notes") || null,
@@ -152,7 +152,7 @@ export async function createSessionAction(form: FormData): Promise<void> {
     }
   }
 
-  const session = db.createSession(
+  const session = await db.createSession(
     { name, date, startMinutes, slotCount, courts, costPerCourtSlot, currency: str(form, "currency") || "EUR" },
     admin,
   );
@@ -162,7 +162,7 @@ export async function createSessionAction(form: FormData): Promise<void> {
 
 export async function updateSessionAction(form: FormData): Promise<void> {
   const sessionId = str(form, "sessionId");
-  const existing = db.getSession(sessionId);
+  const existing = await db.getSession(sessionId);
   if (!existing) backTo("/", { error: "That mixin no longer exists." });
 
   let startMinutes = existing.startMinutes;
@@ -191,7 +191,7 @@ export async function updateSessionAction(form: FormData): Promise<void> {
     }
   }
 
-  db.updateSession(sessionId, {
+  await db.updateSession(sessionId, {
     name: str(form, "name") || existing.name,
     date: str(form, "date") || existing.date,
     startMinutes,
@@ -207,7 +207,7 @@ export async function updateSessionAction(form: FormData): Promise<void> {
 
 export async function deleteSessionAction(form: FormData): Promise<void> {
   const sessionId = str(form, "sessionId");
-  db.deleteSession(sessionId);
+  await db.deleteSession(sessionId);
   revalidatePath("/");
   backTo("/", { notice: "Mixin deleted." });
 }
@@ -217,7 +217,7 @@ export async function deleteSessionAction(form: FormData): Promise<void> {
 export async function addSignupAction(form: FormData): Promise<void> {
   const admin = await adminName();
   const sessionId = str(form, "sessionId");
-  const session = db.getSession(sessionId);
+  const session = await db.getSession(sessionId);
   if (!session) backTo("/", { error: "That mixin no longer exists." });
 
   let playerId = str(form, "playerId");
@@ -231,7 +231,7 @@ export async function addSignupAction(form: FormData): Promise<void> {
     if (!Number.isFinite(rating)) {
       backTo(`/sessions/${sessionId}`, { error: "Give the new player a rating." });
     }
-    playerId = db.createPlayer({ name: newName, rating }, admin).id;
+    playerId = (await db.createPlayer({ name: newName, rating }, admin)).id;
   }
 
   let earliestStartMinutes = session.startMinutes;
@@ -245,7 +245,7 @@ export async function addSignupAction(form: FormData): Promise<void> {
   }
 
   try {
-    db.addSignup({
+    await db.addSignup({
       sessionId,
       playerId,
       requestedSlots: Math.max(1, int(form, "requestedSlots", 2)),
@@ -268,7 +268,7 @@ export async function addSignupAction(form: FormData): Promise<void> {
 export async function importSignupsAction(form: FormData): Promise<void> {
   const admin = await adminName();
   const sessionId = str(form, "sessionId");
-  const session = db.getSession(sessionId);
+  const session = await db.getSession(sessionId);
   if (!session) backTo("/", { error: "That mixin no longer exists." });
 
   const text = String(form.get("text") ?? "");
@@ -280,9 +280,9 @@ export async function importSignupsAction(form: FormData): Promise<void> {
     startMinutes: session.startMinutes,
   });
 
-  const players = db.listPlayers(true);
+  const players = await db.listPlayers(true);
   const byName = new Map(players.map((p) => [p.name.toLowerCase(), p]));
-  const existing = new Set(db.listSignups(sessionId).map((s) => s.playerId));
+  const existing = new Set((await db.listSignups(sessionId)).map((s) => s.playerId));
 
   let added = 0;
   const created: string[] = [];
@@ -300,7 +300,7 @@ export async function importSignupsAction(form: FormData): Promise<void> {
         skipped.push(`${line.raw} (new player, no rating given)`);
         continue;
       }
-      player = db.createPlayer(
+      player = await db.createPlayer(
         { name: line.name, rating: defaultRating, notes: "Added by WhatsApp import — check rating" },
         admin,
       );
@@ -313,7 +313,7 @@ export async function importSignupsAction(form: FormData): Promise<void> {
       continue;
     }
 
-    db.addSignup({
+    await db.addSignup({
       sessionId,
       playerId: player.id,
       requestedSlots: line.games,
@@ -349,7 +349,7 @@ export async function updateSignupAction(form: FormData): Promise<void> {
   }
 
   const method = str(form, "paymentMethod");
-  db.updateSignup(signupId, {
+  await db.updateSignup(signupId, {
     requestedSlots: form.get("requestedSlots") ? Math.max(1, int(form, "requestedSlots", 1)) : undefined,
     earliestStartMinutes,
     paymentMethod: form.has("paymentMethod") ? ((method || null) as PaymentMethod | null) : undefined,
@@ -362,7 +362,7 @@ export async function updateSignupAction(form: FormData): Promise<void> {
 /** Marks someone as unable to attend; reserves move up automatically. */
 export async function withdrawSignupAction(form: FormData): Promise<void> {
   const sessionId = str(form, "sessionId");
-  db.updateSignup(str(form, "signupId"), { status: "WITHDRAWN" });
+  await db.updateSignup(str(form, "signupId"), { status: "WITHDRAWN" });
   revalidatePath(`/sessions/${sessionId}`);
   backTo(`/sessions/${sessionId}`, {
     notice: "Marked as not attending. The reserve list has moved up.",
@@ -371,14 +371,14 @@ export async function withdrawSignupAction(form: FormData): Promise<void> {
 
 export async function restoreSignupAction(form: FormData): Promise<void> {
   const sessionId = str(form, "sessionId");
-  db.updateSignup(str(form, "signupId"), { status: "CONFIRMED" });
+  await db.updateSignup(str(form, "signupId"), { status: "CONFIRMED" });
   revalidatePath(`/sessions/${sessionId}`);
   backTo(`/sessions/${sessionId}`, { notice: "Back on the list." });
 }
 
 export async function removeSignupAction(form: FormData): Promise<void> {
   const sessionId = str(form, "sessionId");
-  db.removeSignup(str(form, "signupId"));
+  await db.removeSignup(str(form, "signupId"));
   revalidatePath(`/sessions/${sessionId}`);
   backTo(`/sessions/${sessionId}`, { notice: "Signup removed." });
 }
@@ -387,28 +387,28 @@ export async function removeSignupAction(form: FormData): Promise<void> {
 
 export async function generateScheduleAction(form: FormData): Promise<void> {
   const sessionId = str(form, "sessionId");
-  const session = db.getSession(sessionId);
+  const session = await db.getSession(sessionId);
   if (!session) backTo("/", { error: "That mixin no longer exists." });
 
   const { allocateSignups } = await import("@/domain/signups");
-  const allocation = allocateSignups(session, db.listSignups(sessionId));
+  const allocation = allocateSignups(session, await db.listSignups(sessionId));
   if (allocation.confirmed.length < 4) {
     backTo(`/sessions/${sessionId}`, { error: "At least four confirmed players are needed." });
   }
 
-  const players = db.listPlayers(true);
+  const players = await db.listPlayers(true);
   const result = generateSchedule({
     session,
     signups: allocation.confirmed,
     ratings: new Map(players.map((p) => [p.id, p.rating])),
     // The session's own previous draw must not count as history to avoid.
-    history: db.buildHistoryIndex(sessionId),
+    history: await db.buildHistoryIndex(sessionId),
     seed: form.get("reroll") ? Date.now() % 100000 : undefined,
   });
 
-  db.replaceMatches(sessionId, result.matches);
+  await db.replaceMatches(sessionId, result.matches);
   if (session.status === "OPEN" || session.status === "CLOSED") {
-    db.updateSession(sessionId, { status: "SCHEDULED" });
+    await db.updateSession(sessionId, { status: "SCHEDULED" });
   }
 
   revalidatePath(`/sessions/${sessionId}`);
@@ -423,7 +423,7 @@ export async function generateScheduleAction(form: FormData): Promise<void> {
 
 export async function clearScheduleAction(form: FormData): Promise<void> {
   const sessionId = str(form, "sessionId");
-  db.replaceMatches(sessionId, []);
+  await db.replaceMatches(sessionId, []);
   revalidatePath(`/sessions/${sessionId}`);
   backTo(`/sessions/${sessionId}`, { notice: "Line-ups cleared." });
 }
@@ -449,11 +449,11 @@ export async function setScoreAction(form: FormData): Promise<void> {
 
   // Both blank clears the result; one blank is almost certainly a slip.
   if (rawA === "" && rawB === "") {
-    db.setMatchScore(sessionId, slotIndex, courtNumber, null, null);
+    await db.setMatchScore(sessionId, slotIndex, courtNumber, null, null);
   } else if (rawA === "" || rawB === "") {
     backTo(`/sessions/${sessionId}`, { error: "Enter games for both teams, or leave both blank." });
   } else {
-    db.setMatchScore(sessionId, slotIndex, courtNumber, Number(rawA), Number(rawB));
+    await db.setMatchScore(sessionId, slotIndex, courtNumber, Number(rawA), Number(rawB));
   }
 
   revalidatePath(`/sessions/${sessionId}`);
@@ -471,7 +471,7 @@ export async function setScoreAction(form: FormData): Promise<void> {
 export async function applyRatingsAction(form: FormData): Promise<void> {
   const admin = await adminName();
   const sessionId = str(form, "sessionId");
-  const session = db.getSession(sessionId);
+  const session = await db.getSession(sessionId);
   if (!session) backTo("/", { error: "That mixin no longer exists." });
 
   if (session.ratingsAppliedAt) {
@@ -480,7 +480,7 @@ export async function applyRatingsAction(form: FormData): Promise<void> {
     });
   }
 
-  const results: MatchResult[] = db.listMatches(sessionId).map((match) => ({
+  const results: MatchResult[] = (await db.listMatches(sessionId)).map((match) => ({
     teamA: match.teamA,
     teamB: match.teamB,
     gamesA: match.scoreA ?? 0,
@@ -489,7 +489,7 @@ export async function applyRatingsAction(form: FormData): Promise<void> {
 
   const changes = ratingChangesFromResults(
     results,
-    new Map(db.listPlayers(true).map((player) => [player.id, player.rating])),
+    new Map((await db.listPlayers(true)).map((player) => [player.id, player.rating])),
   );
   const material = materialRatingChanges(changes);
 
@@ -499,7 +499,7 @@ export async function applyRatingsAction(form: FormData): Promise<void> {
     });
   }
 
-  const { applied, alreadyApplied } = db.applyRatingChanges(
+  const { applied, alreadyApplied } = await db.applyRatingChanges(
     sessionId,
     changes,
     admin,

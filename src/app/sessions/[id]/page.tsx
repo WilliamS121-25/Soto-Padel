@@ -48,19 +48,19 @@ export default async function SessionPage({
   const { id } = await params;
   const { error, notice } = await searchParams;
 
-  const session = db.getSession(id);
+  const session = await db.getSession(id);
   if (!session) notFound();
 
-  const players = db.listPlayers(true);
+  const players = await db.listPlayers(true);
   const byId = new Map(players.map((p) => [p.id, p]));
   const nameOf = (playerId: string) => byId.get(playerId)?.name ?? "Unknown";
   const ratingOf = (playerId: string) => byId.get(playerId)?.rating ?? 0;
 
-  const signups = db.listSignups(id);
+  const signups = await db.listSignups(id);
   const allocation = allocateSignups(session, signups);
   const capacity = computeCapacity(session, allocation.committedPlayerBlocks);
 
-  const matches = db.listMatches(id);
+  const matches = await db.listMatches(id);
   const rounds = reconstructRounds(session, allocation.confirmed, matches);
   const drift = detectScheduleDrift(allocation.confirmed, matches);
 

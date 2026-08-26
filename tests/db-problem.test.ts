@@ -1,85 +1,117 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 /**
- * A host that cannot give the app a writable disk used to produce a bare crash
- * page. These check the failure becomes something an admin can act on.
+ * An unreachable database used to produce a bare crash page. These check the
+ * failure becomes something an admin can act on, and that nothing in the
+ * message leaks the database password.
  */
 let db: typeof import("@/db");
 let dir: string;
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "soto-padel-problem-"));
-  // Deliberately broken first: a working connection is cached for the life of
-  // the process, so it would mask everything after it.
-  const blocker = join(dir, "blocker");
-  writeFileSync(blocker, "");
-  process.env.DATABASE_PATH = join(blocker, "data", "soto.db");
+  delete process.env.DATABASE_URL;
+  delete process.env.POSTGRES_URL;
+  process.env.DATABASE_PATH = join(dir, "pg");
+  (globalThis as { sotoPadelDb?: unknown }).sotoPadelDb = undefined;
   db = await import("@/db");
-});
+  // PGlite compiles and initialises WebAssembly on the first query, which takes
+  // seconds on a cold cache. Doing it here rather than letting it land inside
+  // the first test keeps that cost out of the per-test timeout.
+  await db.listPlayers();
+}, 60_000);
 
 afterAll(() => {
   rmSync(dir, { recursive: true, force: true });
+  delete process.env.DATABASE_URL;
 });
 
-describe("a database that cannot be opened", () => {
-  it("is reported rather than thrown", () => {
-    const problem = db.databaseProblem();
-    expect(problem).not.toBeNull();
-    expect(problem?.code).toBe("ENOTDIR");
-    expect(problem?.path).toContain("blocker");
-    expect(problem?.remedy).toMatch(/DATABASE_PATH|volume/i);
+describe("a healthy database", () => {
+  it("reports no problem", async () => {
+    expect(await db.databaseProblem()).toBeNull();
   });
 
-  it("keeps reporting until it is fixed, then starts working", () => {
-    expect(db.databaseProblem()).not.toBeNull();
-    // A failed open caches nothing, so pointing it somewhere usable recovers.
-    process.env.DATABASE_PATH = join(dir, "good", "soto.db");
-    expect(db.databaseProblem()).toBeNull();
-    expect(db.listSessions()).toEqual([]);
+  it("says where it is without a server involved", () => {
+    expect(db.databaseLocation()).toContain("local PGlite");
+    expect(db.databaseLocation()).toContain("no DATABASE_URL");
   });
 });
 
-describe("explaining each way it can fail", () => {
-  const describe_ = (code: string) =>
+describe("describing where the database lives", () => {
+  it("never includes the password", () => {
+    process.env.DATABASE_URL = "postgres://admin:hunter2@db.example.com:5432/soto";
+    const shown = db.databaseLocation();
+    expect(shown).not.toContain("hunter2");
+    expect(shown).not.toContain("admin");
+    expect(shown).toContain("db.example.com");
+    expect(shown).toContain("/soto");
+    delete process.env.DATABASE_URL;
+  });
+
+  it("copes with a connection string it cannot parse", () => {
+    process.env.DATABASE_URL = "not a url at all";
+    expect(db.databaseLocation()).toBe("the configured DATABASE_URL");
+    delete process.env.DATABASE_URL;
+  });
+});
+
+describe("explaining each way the connection can fail", () => {
+  const explain = (code: string, message = `${code}: something went wrong`) =>
     db.describeDatabaseError(
-      Object.assign(new Error(`${code}: something went wrong`), { code }),
-      "/data/soto-padel.db",
+      Object.assign(new Error(message), { code }),
+      "postgres://db.example.com/soto",
     );
 
-  it("names the read-only filesystem case, which is what serverless hosts give you", () => {
-    const problem = describe_("EROFS");
-    expect(problem.summary).toMatch(/read-only/i);
-    expect(problem.remedy).toMatch(/serverless/i);
-    expect(problem.remedy).toMatch(/writable disk/i);
-    // Nothing should suggest a setting can fix it, because none can.
-    expect(problem.remedy).toMatch(/No environment variable will fix it/i);
+  it("tells a missing host apart from a refused connection", () => {
+    expect(explain("ENOTFOUND").summary).toMatch(/could not be found/i);
+    expect(explain("ECONNREFUSED").summary).toMatch(/refused|did not answer/i);
+    expect(explain("ETIMEDOUT").summary).toMatch(/refused|did not answer/i);
   });
 
-  it("tells a permissions problem apart from a missing path", () => {
-    expect(describe_("EACCES").summary).toMatch(/not allowed to write/i);
-    expect(describe_("EPERM").summary).toMatch(/not allowed to write/i);
-    expect(describe_("ENOENT").summary).toMatch(/cannot be created/i);
-    expect(describe_("ENOTDIR").summary).toMatch(/cannot be created/i);
+  it("recognises bad credentials from the message, not a code", () => {
+    const problem = explain("", 'password authentication failed for user "admin"');
+    expect(problem.summary).toMatch(/rejected the username or password/i);
+    expect(problem.remedy).toMatch(/DATABASE_URL/);
   });
 
-  it("says plainly when the disk is full", () => {
-    expect(describe_("ENOSPC").summary).toMatch(/disk is full/i);
+  it("recognises a missing database", () => {
+    expect(explain("", 'database "soto" does not exist').summary).toMatch(/does not exist/i);
+  });
+
+  it("recognises a TLS rejection and names the usual fix", () => {
+    const problem = explain("", "self-signed certificate in certificate chain");
+    expect(problem.summary).toMatch(/certificate/i);
+    expect(problem.remedy).toMatch(/sslmode=require/);
+  });
+
+  it("recognises connection exhaustion, which is the serverless failure mode", () => {
+    const problem = explain("", "sorry, too many clients already");
+    expect(problem.summary).toMatch(/out of connections/i);
+    expect(problem.remedy).toMatch(/pooled/i);
+    expect(problem.remedy).toMatch(/DATABASE_POOL_MAX/);
+  });
+
+  it("points at DATABASE_URL when nothing is configured at all", () => {
+    delete process.env.DATABASE_URL;
+    const problem = explain("EACCES");
+    expect(problem.summary).toMatch(/No DATABASE_URL is set/i);
+    expect(problem.remedy).toMatch(/Vercel|dashboard/i);
   });
 
   it("still gives something useful for an unrecognised error", () => {
-    const problem = describe_("EWEIRD");
+    const problem = explain("EWEIRD");
     expect(problem.code).toBe("EWEIRD");
     expect(problem.summary).toBeTruthy();
-    expect(problem.remedy).toMatch(/DATABASE_PATH/);
+    expect(problem.remedy).toMatch(/DATABASE_URL/);
   });
 
   it("always passes the underlying error through for an admin to read", () => {
-    for (const code of ["EROFS", "EACCES", "ENOSPC", "EWEIRD"]) {
-      expect(describe_(code).detail).toContain(code);
-      expect(describe_(code).path).toBe("/data/soto-padel.db");
+    for (const code of ["ENOTFOUND", "ECONNREFUSED", "EWEIRD"]) {
+      expect(explain(code).detail).toContain(code);
+      expect(explain(code).path).toBe("postgres://db.example.com/soto");
     }
   });
 });

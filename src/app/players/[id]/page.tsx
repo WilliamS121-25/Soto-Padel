@@ -14,12 +14,12 @@ export default async function PlayerPage({
   const { id } = await params;
   const { error, notice } = await searchParams;
 
-  const player = db.getPlayer(id);
+  const player = await db.getPlayer(id);
   if (!player) notFound();
 
-  const ratingHistory = db.listRatingHistory(id);
-  const history = db.buildHistoryIndex();
-  const names = new Map(db.listPlayers(true).map((p) => [p.id, p.name]));
+  const ratingHistory = await db.listRatingHistory(id);
+  const history = await db.buildHistoryIndex();
+  const names = new Map((await db.listPlayers(true)).map((p) => [p.id, p.name]));
   const nameOf = (playerId: string) => names.get(playerId) ?? "Unknown";
 
   const partners = history.partnersOf(id);

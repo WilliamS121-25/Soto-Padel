@@ -15,8 +15,9 @@ npm install
 npm run dev                # http://localhost:3000
 ```
 
-That is the whole setup. The SQLite database is created on first use at
-`./data/soto-padel.db`, or wherever `DATABASE_PATH` points.
+That is the whole setup. With no `DATABASE_URL` configured the app runs Postgres
+**in-process** — PGlite, compiled to WebAssembly — against `./data/postgres`, so
+there is no database server to install and nothing to configure.
 
 **There is no sign-in.** Anyone who can reach the app can use it, and can read
 and change everything in it — including player phone numbers, ratings and
@@ -147,47 +148,50 @@ dependency, and is where the real logic lives. It is covered by the tests in
 
 ## Deployment
 
-The database is a SQLite file, so the one hard requirement is a host that gives
-the app a **persistent disk**. Serverless platforms that hand each request a
-fresh, read-only filesystem — **Vercel included** — cannot run it: the app comes
-up, sign-in works because the login page touches no data, and then every page
-behind it fails trying to open the database.
+The app stores everything in Postgres. Give it a `DATABASE_URL` and it will run
+anywhere, serverless included.
 
-A `Dockerfile` is included and works on any of these.
+### Vercel
 
-### Fly.io
+1. Push the repo and import it.
+2. In the project, **Storage → Create Database → Postgres**. Vercel sets the
+   connection string for you; there is nothing to copy.
+3. Deploy. The schema is created on first boot.
 
-```bash
-fly launch --no-deploy                          # create the app, keep fly.toml
-fly volumes create soto_data --size 1 --region lhr
-fly deploy
-```
+Nothing else is required — no secrets, no volume, no build configuration.
 
-`fly.toml` already mounts the volume at `/data` and points `DATABASE_PATH` at it.
+### Anywhere else, with a managed Postgres
 
-### Railway or Render
-
-Point the service at this repo; both detect the `Dockerfile`. Then:
-
-- attach a **volume / disk mounted at `/data`**
-- leave `DATABASE_PATH` as `/data/soto-padel.db` (the Dockerfile's default)
-
-### A plain VPS
+Set `DATABASE_URL` (Neon, Supabase, Railway, RDS, or your own server) and run
+the included `Dockerfile`:
 
 ```bash
 docker build -t soto-padel .
 docker run -d --restart unless-stopped -p 80:3000 \
-  -v /srv/soto-padel:/data \
+  -e DATABASE_URL='postgres://...?sslmode=require' \
   soto-padel
+```
+
+### Anywhere else, with no database server
+
+Leave `DATABASE_URL` unset and give the container a volume at `/data`; the app
+runs Postgres in-process against it. `fly.toml` is set up this way:
+
+```bash
+fly launch --no-deploy
+fly volumes create soto_data --size 1 --region lhr
+fly deploy
 ```
 
 ### Whichever you choose
 
-- **Do not run more than one instance.** SQLite has a single writer and one
-  volume; scaling out needs Postgres first (replace `src/db/index.ts`; the whole
-  of `src/domain/` stays as it is).
-- **Back up by copying the database file**, e.g.
-  `fly ssh console -C "cp /data/soto-padel.db /data/backup.db"` then download it.
+- **On a serverless host, use your provider's pooled connection string** and
+  leave `DATABASE_POOL_MAX` at 1. Every instance holds its own pool, and that is
+  how a Postgres connection limit gets exhausted.
+- **Do not run more than one instance against the in-process database.** It
+  lives on one volume and has a single writer. Scaling out means `DATABASE_URL`.
+- **Back up** with your provider's snapshots, or `pg_dump` against
+  `DATABASE_URL`.
 - **There is no sign-in**, so whoever can reach the URL can change everything.
   Put it behind your host's access control if that matters.
 

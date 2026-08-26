@@ -1,8 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // better-sqlite3 is a native module; it must not be bundled by webpack.
-  serverExternalPackages: ["better-sqlite3"],
+  // Both database drivers must stay out of the bundle: pg opens real TCP
+  // sockets, and PGlite ships a WebAssembly build that the bundler would
+  // mangle.
+  serverExternalPackages: ["pg", "@electric-sql/pglite"],
 };
 
 export default nextConfig;

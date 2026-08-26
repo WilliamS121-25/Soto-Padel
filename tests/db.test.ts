@@ -6,46 +6,53 @@ import { ratingChangesFromResults } from "@/domain/rating-updates";
 import { parseTime } from "@/domain/time";
 
 /**
- * These run against a real SQLite file in a temp directory. The module is
- * imported lazily so DATABASE_PATH is set before the connection opens.
+ * These run against real Postgres — PGlite, compiled to WebAssembly and running
+ * in-process against a temp directory, so no database server is needed. The
+ * module is imported lazily so the environment is set before it connects.
  */
 let db: typeof import("@/db");
 let dir: string;
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "soto-padel-test-"));
-  process.env.DATABASE_PATH = join(dir, "test.db");
+  delete process.env.DATABASE_URL;
+  delete process.env.POSTGRES_URL;
+  process.env.DATABASE_PATH = join(dir, "pg");
   db = await import("@/db");
-});
+  // PGlite compiles and initialises WebAssembly on the first query, which takes
+  // seconds on a cold cache. Doing it here rather than letting it land inside
+  // the first test keeps that cost out of the per-test timeout.
+  await db.listPlayers();
+}, 60_000);
 
 afterAll(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
 describe("players", () => {
-  it("creates a player and records the starting rating", () => {
-    const player = db.createPlayer({ name: "Ana Lopez", rating: 3.5, phone: "+34600" }, "will");
+  it("creates a player and records the starting rating", async () => {
+    const player = await db.createPlayer({ name: "Ana Lopez", rating: 3.5, phone: "+34600" }, "will");
     expect(player.name).toBe("Ana Lopez");
     expect(player.rating).toBe(3.5);
     expect(player.active).toBe(true);
 
-    const history = db.listRatingHistory(player.id);
+    const history = await db.listRatingHistory(player.id);
     expect(history).toHaveLength(1);
     expect(history[0]).toMatchObject({ previousRating: null, newRating: 3.5, changedBy: "will" });
   });
 
-  it("snaps an off-scale rating on the way in", () => {
-    const player = db.createPlayer({ name: "Off Scale", rating: 4.31 }, "will");
+  it("snaps an off-scale rating on the way in", async () => {
+    const player = await db.createPlayer({ name: "Off Scale", rating: 4.31 }, "will");
     expect(player.rating).toBe(4.25);
   });
 
-  it("records every rating change with who and why", () => {
-    const player = db.createPlayer({ name: "Improver", rating: 3 }, "will");
-    db.setPlayerRating(player.id, 3.25, "will", "Won the Americano");
-    db.setPlayerRating(player.id, 3.5, "maria", "Levelled up");
+  it("records every rating change with who and why", async () => {
+    const player = await db.createPlayer({ name: "Improver", rating: 3 }, "will");
+    await db.setPlayerRating(player.id, 3.25, "will", "Won the Americano");
+    await db.setPlayerRating(player.id, 3.5, "maria", "Levelled up");
 
-    expect(db.getPlayer(player.id)?.rating).toBe(3.5);
-    const history = db.listRatingHistory(player.id);
+    expect((await db.getPlayer(player.id))?.rating).toBe(3.5);
+    const history = await db.listRatingHistory(player.id);
     expect(history).toHaveLength(3);
     expect(history[0]).toMatchObject({
       previousRating: 3.25,
@@ -55,24 +62,36 @@ describe("players", () => {
     });
   });
 
-  it("does not log a change that changes nothing", () => {
-    const player = db.createPlayer({ name: "Steady", rating: 4 }, "will");
-    db.setPlayerRating(player.id, 4, "will", "no change");
-    expect(db.listRatingHistory(player.id)).toHaveLength(1);
+  it("orders same-millisecond changes definitely, not arbitrarily", async () => {
+    const player = await db.createPlayer({ name: "Rapid", rating: 3 }, "will");
+    // Fast enough to share a timestamp; the sequence column is what separates them.
+    await db.setPlayerRating(player.id, 3.25, "will", "first");
+    await db.setPlayerRating(player.id, 3.5, "will", "second");
+    await db.setPlayerRating(player.id, 3.75, "will", "third");
+
+    const history = await db.listRatingHistory(player.id);
+    expect(history.map((h) => h.reason)).toEqual(["third", "second", "first", "Initial rating"]);
+    expect(history[0]?.newRating).toBe((await db.getPlayer(player.id))?.rating);
   });
 
-  it("hides deactivated players unless asked for them", () => {
-    const player = db.createPlayer({ name: "Moved Away", rating: 4 }, "will");
-    db.updatePlayer(player.id, { active: false });
+  it("does not log a change that changes nothing", async () => {
+    const player = await db.createPlayer({ name: "Steady", rating: 4 }, "will");
+    await db.setPlayerRating(player.id, 4, "will", "no change");
+    expect(await db.listRatingHistory(player.id)).toHaveLength(1);
+  });
 
-    expect(db.listPlayers().map((p) => p.id)).not.toContain(player.id);
-    expect(db.listPlayers(true).map((p) => p.id)).toContain(player.id);
+  it("hides deactivated players unless asked for them", async () => {
+    const player = await db.createPlayer({ name: "Moved Away", rating: 4 }, "will");
+    await db.updatePlayer(player.id, { active: false });
+
+    expect((await db.listPlayers()).map((p) => p.id)).not.toContain(player.id);
+    expect((await db.listPlayers(true)).map((p) => p.id)).toContain(player.id);
   });
 });
 
 describe("sessions and their courts", () => {
-  it("round-trips staggered court bookings", () => {
-    const session = db.createSession(
+  it("round-trips staggered court bookings", async () => {
+    const session = await db.createSession(
       {
         name: "Friday Mixin",
         date: "2025-08-29",
@@ -87,7 +106,7 @@ describe("sessions and their courts", () => {
       "will",
     );
 
-    const loaded = db.getSession(session.id);
+    const loaded = await db.getSession(session.id);
     expect(loaded?.courts).toEqual([
       { courtNumber: 1, startMinutes: parseTime("18:00"), slotCount: 4 },
       { courtNumber: 3, startMinutes: parseTime("19:00"), slotCount: 3 },
@@ -96,8 +115,8 @@ describe("sessions and their courts", () => {
     expect(loaded?.currency).toBe("EUR");
   });
 
-  it("replaces the court selection when it is edited", () => {
-    const session = db.createSession(
+  it("replaces the court selection when it is edited", async () => {
+    const session = await db.createSession(
       {
         name: "Edit Me",
         date: "2025-09-05",
@@ -109,7 +128,7 @@ describe("sessions and their courts", () => {
       "will",
     );
 
-    db.updateSession(session.id, {
+    await db.updateSession(session.id, {
       courts: [
         { courtNumber: 2, startMinutes: parseTime("18:30"), slotCount: 2 },
         { courtNumber: 5, startMinutes: parseTime("18:30"), slotCount: 2 },
@@ -117,42 +136,73 @@ describe("sessions and their courts", () => {
       status: "CLOSED",
     });
 
-    const loaded = db.getSession(session.id);
+    const loaded = await db.getSession(session.id);
     expect(loaded?.courts.map((c) => c.courtNumber)).toEqual([2, 5]);
     expect(loaded?.status).toBe("CLOSED");
+  });
+
+  it("takes its signups and matches with it when deleted", async () => {
+    const session = await db.createSession(
+      {
+        name: "Doomed",
+        date: "2025-09-06",
+        startMinutes: parseTime("18:00"),
+        slotCount: 1,
+        costPerCourtSlot: 600,
+        courts: [{ courtNumber: 1, startMinutes: parseTime("18:00"), slotCount: 1 }],
+      },
+      "will",
+    );
+    const player = await db.createPlayer({ name: "Doomed Player", rating: 4 }, "will");
+    await db.addSignup({
+      sessionId: session.id,
+      playerId: player.id,
+      requestedSlots: 1,
+      earliestStartMinutes: parseTime("18:00"),
+    });
+
+    await db.deleteSession(session.id);
+    expect(await db.getSession(session.id)).toBeNull();
+    expect(await db.listSignups(session.id)).toEqual([]);
+    // The player survives; only the session's own rows go.
+    expect(await db.getPlayer(player.id)).not.toBeNull();
   });
 });
 
 describe("signups", () => {
-  it("adds each player to the back of the queue", () => {
-    const session = db.createSession(
+  async function emptySession(name: string, slots = 4) {
+    return db.createSession(
       {
-        name: "Queue Test",
+        name,
         date: "2025-09-12",
         startMinutes: parseTime("18:00"),
-        slotCount: 4,
+        slotCount: slots,
         costPerCourtSlot: 600,
-        courts: [{ courtNumber: 1, startMinutes: parseTime("18:00"), slotCount: 4 }],
+        courts: [{ courtNumber: 1, startMinutes: parseTime("18:00"), slotCount: slots }],
       },
       "will",
     );
-    const first = db.createPlayer({ name: "First", rating: 4 }, "will");
-    const second = db.createPlayer({ name: "Second", rating: 4 }, "will");
+  }
 
-    db.addSignup({
+  it("adds each player to the back of the queue", async () => {
+    const session = await emptySession("Queue Test");
+    const first = await db.createPlayer({ name: "First", rating: 4 }, "will");
+    const second = await db.createPlayer({ name: "Second", rating: 4 }, "will");
+
+    await db.addSignup({
       sessionId: session.id,
       playerId: first.id,
       requestedSlots: 4,
       earliestStartMinutes: parseTime("18:00"),
     });
-    db.addSignup({
+    await db.addSignup({
       sessionId: session.id,
       playerId: second.id,
       requestedSlots: 2,
       earliestStartMinutes: parseTime("19:00"),
     });
 
-    const signups = db.listSignups(session.id);
+    const signups = await db.listSignups(session.id);
     expect(signups.map((s) => s.queuePosition)).toEqual([1, 2]);
     expect(signups[1]).toMatchObject({
       playerId: second.id,
@@ -163,64 +213,44 @@ describe("signups", () => {
     });
   });
 
-  it("stores the chosen payment method and withdrawals", () => {
-    const session = db.createSession(
-      {
-        name: "Payment Test",
-        date: "2025-09-19",
-        startMinutes: parseTime("18:00"),
-        slotCount: 2,
-        costPerCourtSlot: 600,
-        courts: [{ courtNumber: 1, startMinutes: parseTime("18:00"), slotCount: 2 }],
-      },
-      "will",
-    );
-    const player = db.createPlayer({ name: "Payer", rating: 4 }, "will");
-    const signup = db.addSignup({
+  it("stores the chosen payment method and withdrawals", async () => {
+    const session = await emptySession("Payment Test", 2);
+    const player = await db.createPlayer({ name: "Payer", rating: 4 }, "will");
+    const signup = await db.addSignup({
       sessionId: session.id,
       playerId: player.id,
       requestedSlots: 2,
       earliestStartMinutes: parseTime("18:00"),
     });
 
-    db.updateSignup(signup.id, { paymentMethod: "REVOLUT" });
-    expect(db.listSignups(session.id)[0]?.paymentMethod).toBe("REVOLUT");
+    await db.updateSignup(signup.id, { paymentMethod: "REVOLUT" });
+    expect((await db.listSignups(session.id))[0]?.paymentMethod).toBe("REVOLUT");
 
-    db.updateSignup(signup.id, { status: "WITHDRAWN" });
-    expect(db.listSignups(session.id)[0]?.status).toBe("WITHDRAWN");
+    await db.updateSignup(signup.id, { status: "WITHDRAWN" });
+    expect((await db.listSignups(session.id))[0]?.status).toBe("WITHDRAWN");
   });
 
-  it("refuses to sign the same player up twice", () => {
-    const session = db.createSession(
-      {
-        name: "Dupe Test",
-        date: "2025-09-26",
-        startMinutes: parseTime("18:00"),
-        slotCount: 2,
-        costPerCourtSlot: 600,
-        courts: [{ courtNumber: 1, startMinutes: parseTime("18:00"), slotCount: 2 }],
-      },
-      "will",
-    );
-    const player = db.createPlayer({ name: "Twice", rating: 4 }, "will");
+  it("refuses to sign the same player up twice", async () => {
+    const session = await emptySession("Dupe Test", 2);
+    const player = await db.createPlayer({ name: "Twice", rating: 4 }, "will");
     const args = {
       sessionId: session.id,
       playerId: player.id,
       requestedSlots: 2,
       earliestStartMinutes: parseTime("18:00"),
     };
-    db.addSignup(args);
-    expect(() => db.addSignup(args)).toThrow();
+    await db.addSignup(args);
+    await expect(db.addSignup(args)).rejects.toThrow();
   });
 });
 
 describe("matches and history", () => {
-  it("saves a schedule, replaces it on regeneration, and builds history", () => {
-    const players = ["A", "B", "C", "D"].map((n) =>
-      db.createPlayer({ name: `Hist ${n}`, rating: 4 }, "will"),
+  it("saves a schedule, replaces it on regeneration, and builds history", async () => {
+    const players = await Promise.all(
+      ["A", "B", "C", "D"].map((n) => db.createPlayer({ name: `Hist ${n}`, rating: 4 }, "will")),
     );
     const ids = players.map((p) => p.id) as [string, string, string, string];
-    const session = db.createSession(
+    const session = await db.createSession(
       {
         name: "History Test",
         date: "2025-10-03",
@@ -232,35 +262,37 @@ describe("matches and history", () => {
       "will",
     );
 
-    db.replaceMatches(session.id, [
+    await db.replaceMatches(session.id, [
       { slotIndex: 0, courtNumber: 1, teamA: [ids[0], ids[1]], teamB: [ids[2], ids[3]] },
     ]);
-    expect(db.listMatches(session.id)).toHaveLength(1);
+    expect(await db.listMatches(session.id)).toHaveLength(1);
 
     // Regenerating must not stack a second draw on top of the first.
-    db.replaceMatches(session.id, [
+    await db.replaceMatches(session.id, [
       { slotIndex: 0, courtNumber: 1, teamA: [ids[0], ids[2]], teamB: [ids[1], ids[3]] },
     ]);
-    const matches = db.listMatches(session.id);
+    const matches = await db.listMatches(session.id);
     expect(matches).toHaveLength(1);
     expect(matches[0]?.teamA).toEqual([ids[0], ids[2]]);
 
-    const history = db.buildHistoryIndex();
+    const history = await db.buildHistoryIndex();
     expect(history.partnerCount(ids[0], ids[2])).toBe(1);
     expect(history.partnerCount(ids[0], ids[1])).toBe(0);
 
     // Excluding the session being rescheduled leaves its own draw out.
-    expect(db.buildHistoryIndex(session.id).partnerCount(ids[0], ids[2])).toBe(0);
+    expect((await db.buildHistoryIndex(session.id)).partnerCount(ids[0], ids[2])).toBe(0);
   });
 });
 
 describe("scores and automatic rating changes", () => {
-  function makeScoredSession(name: string, ratingValue = 4) {
-    const players = ["A", "B", "C", "D"].map((n) =>
-      db.createPlayer({ name: `${name} ${n}`, rating: ratingValue }, "will"),
+  async function makeScoredSession(name: string, ratingValue = 4) {
+    const players = await Promise.all(
+      ["A", "B", "C", "D"].map((n) =>
+        db.createPlayer({ name: `${name} ${n}`, rating: ratingValue }, "will"),
+      ),
     );
     const ids = players.map((p) => p.id) as [string, string, string, string];
-    const session = db.createSession(
+    const session = await db.createSession(
       {
         name,
         date: "2026-01-09",
@@ -271,112 +303,102 @@ describe("scores and automatic rating changes", () => {
       },
       "will",
     );
-    db.replaceMatches(session.id, [
+    await db.replaceMatches(session.id, [
       { slotIndex: 0, courtNumber: 1, teamA: [ids[0], ids[1]], teamB: [ids[2], ids[3]] },
     ]);
     return { session, ids };
   }
 
-  it("stores and clears a score", () => {
-    const { session } = makeScoredSession("Score Store");
-    expect(db.listMatches(session.id)[0]?.scoreA).toBeNull();
-
-    db.setMatchScore(session.id, 0, 1, 6, 3);
-    expect(db.listMatches(session.id)[0]).toMatchObject({ scoreA: 6, scoreB: 3 });
-
-    db.setMatchScore(session.id, 0, 1, null, null);
-    expect(db.listMatches(session.id)[0]?.scoreA).toBeNull();
-  });
-
-  it("rejects a mistyped score rather than letting it wreck a rating", () => {
-    const { session } = makeScoredSession("Typo Guard");
-    db.setMatchScore(session.id, 0, 1, 64, -3);
-    expect(db.listMatches(session.id)[0]).toMatchObject({ scoreA: 20, scoreB: 0 });
-  });
-
-  it("wipes scores when the draw is regenerated", () => {
-    const { session, ids } = makeScoredSession("Regen Wipe");
-    db.setMatchScore(session.id, 0, 1, 6, 3);
-
-    db.replaceMatches(session.id, [
-      { slotIndex: 0, courtNumber: 1, teamA: [ids[0], ids[2]], teamB: [ids[1], ids[3]] },
-    ]);
-    expect(db.listMatches(session.id)[0]?.scoreA).toBeNull();
-  });
-
-  it("applies rating changes once and records why in the history", () => {
-    const { session, ids } = makeScoredSession("Apply Once");
-    db.setMatchScore(session.id, 0, 1, 6, 1);
-
-    const matches = db.listMatches(session.id);
-    const changes = ratingChangesFromResults(
+  async function changesFor(sessionId: string) {
+    const matches = await db.listMatches(sessionId);
+    const players = await db.listPlayers(true);
+    return ratingChangesFromResults(
       matches.map((m) => ({
         teamA: m.teamA,
         teamB: m.teamB,
         gamesA: m.scoreA ?? 0,
         gamesB: m.scoreB ?? 0,
       })),
-      new Map(db.listPlayers(true).map((p) => [p.id, p.rating])),
+      new Map(players.map((p) => [p.id, p.rating])),
     );
+  }
 
-    const result = db.applyRatingChanges(session.id, changes, "will", "Apply Once (2026-01-09)");
+  it("stores and clears a score", async () => {
+    const { session } = await makeScoredSession("Score Store");
+    expect((await db.listMatches(session.id))[0]?.scoreA).toBeNull();
+
+    await db.setMatchScore(session.id, 0, 1, 6, 3);
+    expect((await db.listMatches(session.id))[0]).toMatchObject({ scoreA: 6, scoreB: 3 });
+
+    await db.setMatchScore(session.id, 0, 1, null, null);
+    expect((await db.listMatches(session.id))[0]?.scoreA).toBeNull();
+  });
+
+  it("rejects a mistyped score rather than letting it wreck a rating", async () => {
+    const { session } = await makeScoredSession("Typo Guard");
+    await db.setMatchScore(session.id, 0, 1, 64, -3);
+    expect((await db.listMatches(session.id))[0]).toMatchObject({ scoreA: 20, scoreB: 0 });
+  });
+
+  it("wipes scores when the draw is regenerated", async () => {
+    const { session, ids } = await makeScoredSession("Regen Wipe");
+    await db.setMatchScore(session.id, 0, 1, 6, 3);
+
+    await db.replaceMatches(session.id, [
+      { slotIndex: 0, courtNumber: 1, teamA: [ids[0], ids[2]], teamB: [ids[1], ids[3]] },
+    ]);
+    expect((await db.listMatches(session.id))[0]?.scoreA).toBeNull();
+  });
+
+  it("applies rating changes once and records why in the history", async () => {
+    const { session, ids } = await makeScoredSession("Apply Once");
+    await db.setMatchScore(session.id, 0, 1, 6, 1);
+
+    const result = await db.applyRatingChanges(
+      session.id,
+      await changesFor(session.id),
+      "will",
+      "Apply Once (2026-01-09)",
+    );
     expect(result).toMatchObject({ alreadyApplied: false });
     expect(result.applied).toBeGreaterThan(0);
 
-    // Winners went up, losers came down.
-    expect(db.getPlayer(ids[0])!.rating).toBeGreaterThan(4);
-    expect(db.getPlayer(ids[2])!.rating).toBeLessThan(4);
+    expect((await db.getPlayer(ids[0]))!.rating).toBeGreaterThan(4);
+    expect((await db.getPlayer(ids[2]))!.rating).toBeLessThan(4);
 
-    const history = db.listRatingHistory(ids[0]);
+    const history = await db.listRatingHistory(ids[0]);
     expect(history[0]?.reason).toContain("Apply Once");
     expect(history[0]?.reason).toMatch(/from 1 game/);
     expect(history[0]?.changedBy).toBe("will");
-
-    // The session now knows it has been applied.
-    expect(db.getSession(session.id)?.ratingsAppliedAt).not.toBeNull();
+    expect((await db.getSession(session.id))?.ratingsAppliedAt).not.toBeNull();
   });
 
-  it("refuses to apply the same results twice", () => {
-    const { session, ids } = makeScoredSession("Apply Twice");
-    db.setMatchScore(session.id, 0, 1, 6, 0);
+  it("refuses to apply the same results twice", async () => {
+    const { session, ids } = await makeScoredSession("Apply Twice");
+    await db.setMatchScore(session.id, 0, 1, 6, 0);
 
-    const build = () =>
-      ratingChangesFromResults(
-        db.listMatches(session.id).map((m) => ({
-          teamA: m.teamA,
-          teamB: m.teamB,
-          gamesA: m.scoreA ?? 0,
-          gamesB: m.scoreB ?? 0,
-        })),
-        new Map(db.listPlayers(true).map((p) => [p.id, p.rating])),
-      );
+    await db.applyRatingChanges(session.id, await changesFor(session.id), "will", "Apply Twice");
+    const afterFirst = (await db.getPlayer(ids[0]))!.rating;
+    const historyLength = (await db.listRatingHistory(ids[0])).length;
 
-    db.applyRatingChanges(session.id, build(), "will", "Apply Twice");
-    const afterFirst = db.getPlayer(ids[0])!.rating;
-    const historyLength = db.listRatingHistory(ids[0]).length;
-
-    const second = db.applyRatingChanges(session.id, build(), "will", "Apply Twice");
-    expect(second).toEqual({ applied: 0, alreadyApplied: true });
-    expect(db.getPlayer(ids[0])!.rating).toBe(afterFirst);
-    expect(db.listRatingHistory(ids[0])).toHaveLength(historyLength);
-  });
-
-  it("stores an automatic rating off the quarter-point grid", () => {
-    const { session, ids } = makeScoredSession("Off Grid", 4);
-    db.setMatchScore(session.id, 0, 1, 6, 4);
-    const changes = ratingChangesFromResults(
-      db.listMatches(session.id).map((m) => ({
-        teamA: m.teamA,
-        teamB: m.teamB,
-        gamesA: m.scoreA ?? 0,
-        gamesB: m.scoreB ?? 0,
-      })),
-      new Map(db.listPlayers(true).map((p) => [p.id, p.rating])),
+    const second = await db.applyRatingChanges(
+      session.id,
+      await changesFor(session.id),
+      "will",
+      "Apply Twice",
     );
-    db.applyRatingChanges(session.id, changes, "will", "Off Grid");
+    expect(second).toEqual({ applied: 0, alreadyApplied: true });
+    expect((await db.getPlayer(ids[0]))!.rating).toBe(afterFirst);
+    expect(await db.listRatingHistory(ids[0])).toHaveLength(historyLength);
+  });
+
+  it("stores an automatic rating off the quarter-point grid", async () => {
+    const { session, ids } = await makeScoredSession("Off Grid", 4);
+    await db.setMatchScore(session.id, 0, 1, 6, 4);
+    await db.applyRatingChanges(session.id, await changesFor(session.id), "will", "Off Grid");
 
     // A manual change would snap to 4.25; a derived one keeps its real value.
-    const rating = db.getPlayer(ids[0])!.rating;
+    const rating = (await db.getPlayer(ids[0]))!.rating;
     expect(rating).toBeGreaterThan(4);
     expect(rating).toBeLessThan(4.25);
   });

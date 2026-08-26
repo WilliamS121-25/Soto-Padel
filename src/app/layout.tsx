@@ -18,7 +18,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   // Checked once here rather than in every page: if the database cannot be
   // opened, every route below would throw, and a bare crash page tells an admin
   // nothing about why.
-  const problem = databaseProblem();
+  const problem = await databaseProblem();
 
   return (
     <html lang="en">

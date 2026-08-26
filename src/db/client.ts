@@ -1,0 +1,154 @@
+import { mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+
+/**
+ * The little bit of Postgres the app needs.
+ *
+ * Two implementations sit behind it. In production, node-postgres against
+ * whatever `DATABASE_URL` points at — Neon, Supabase, Vercel Postgres or a
+ * Postgres you run yourself. Locally and in tests, PGlite: real Postgres
+ * compiled to WebAssembly, running in-process against a directory, so nobody
+ * needs a database server installed to run or test the app.
+ *
+ * Both speak the same SQL. The point of the interface is that the repository
+ * layer is written once and never knows which one it has.
+ */
+export interface SqlClient {
+  query<T = Record<string, unknown>>(text: string, params?: unknown[]): Promise<{ rows: T[] }>;
+  /**
+   * Run a script that may contain several statements, such as the schema.
+   *
+   * Separate from `query` because a parameterised query goes over the extended
+   * protocol, which accepts exactly one statement — sending the schema through
+   * it fails with "cannot insert multiple commands into a prepared statement".
+   */
+  exec(sql: string): Promise<void>;
+  /**
+   * Run several statements as one unit. The callback gets a client bound to the
+   * transaction; anything thrown rolls the whole thing back.
+   */
+  transaction<T>(run: (tx: SqlClient) => Promise<T>): Promise<T>;
+}
+
+/** Where PGlite keeps its data when no DATABASE_URL is configured. */
+export function localDataDirectory(): string {
+  return resolve(/* turbopackIgnore: true */ process.env.DATABASE_PATH ?? "./data/postgres");
+}
+
+export function connectionString(): string | undefined {
+  // Vercel's Postgres integrations set POSTGRES_URL; most other hosts and the
+  // Neon integration set DATABASE_URL. Accept either rather than making someone
+  // rename a variable the platform wrote for them.
+  return process.env.DATABASE_URL ?? process.env.POSTGRES_URL ?? undefined;
+}
+
+/* ------------------------------------------------------------ node-postgres */
+
+type PgPool = import("pg").Pool;
+type PgPoolClient = import("pg").PoolClient;
+
+function wrapPgClient(client: PgPoolClient): SqlClient {
+  return {
+    async query(text, params) {
+      const result = await client.query(text, params as never[]);
+      return { rows: result.rows };
+    },
+    async exec(sql) {
+      // No parameters means the simple query protocol, which allows several
+      // statements in one round trip.
+      await client.query(sql);
+    },
+    // Already inside a transaction; nesting would need savepoints, which the
+    // repository never asks for.
+    async transaction(run) {
+      return run(wrapPgClient(client));
+    },
+  };
+}
+
+function fromPool(pool: PgPool): SqlClient {
+  return {
+    async query(text, params) {
+      const result = await pool.query(text, params as never[]);
+      return { rows: result.rows };
+    },
+    async exec(sql) {
+      await pool.query(sql);
+    },
+    async transaction(run) {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const result = await run(wrapPgClient(client));
+        await client.query("COMMIT");
+        return result;
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => {
+          // The original error is the one worth reporting.
+        });
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+  };
+}
+
+/* ------------------------------------------------------------------ PGlite  */
+
+type PGliteInstance = import("@electric-sql/pglite").PGlite;
+
+function fromPGlite(db: PGliteInstance): SqlClient {
+  const client: SqlClient = {
+    async query(text, params) {
+      const result = await db.query(text, params as unknown[]);
+      return { rows: result.rows as never[] };
+    },
+    async exec(sql) {
+      await db.exec(sql);
+    },
+    // PGlite is a single connection, so the statements are already serialised
+    // and BEGIN/COMMIT on it is the whole story.
+    async transaction(run) {
+      await db.query("BEGIN");
+      try {
+        const result = await run(client);
+        await db.query("COMMIT");
+        return result;
+      } catch (error) {
+        await db.query("ROLLBACK").catch(() => {});
+        throw error;
+      }
+    },
+  };
+  return client;
+}
+
+/* ------------------------------------------------------------------ opening */
+
+export async function openClient(): Promise<SqlClient> {
+  const url = connectionString();
+
+  if (url) {
+    const { Pool } = await import("pg");
+    const pool = new Pool({
+      connectionString: url,
+      // Serverless runs many short-lived instances, so each one holds the
+      // smallest pool it can and leans on the provider's own pooler. Raising
+      // this on a serverless host is how you exhaust a Postgres connection
+      // limit.
+      max: Number(process.env.DATABASE_POOL_MAX ?? 1),
+      idleTimeoutMillis: 10_000,
+      connectionTimeoutMillis: 10_000,
+      // Hosted Postgres is TLS-only and uses certificates Node does not ship a
+      // root for; the connection is still encrypted.
+      ssl: url.includes("sslmode=disable") ? false : { rejectUnauthorized: false },
+    });
+    return fromPool(pool);
+  }
+
+  const directory = localDataDirectory();
+  mkdirSync(dirname(directory), { recursive: true });
+  const { PGlite } = await import("@electric-sql/pglite");
+  return fromPGlite(await PGlite.create(directory));
+}

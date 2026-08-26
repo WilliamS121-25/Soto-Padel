@@ -9,8 +9,8 @@ export default async function PlayersPage({
   searchParams: Promise<{ error?: string; notice?: string }>;
 }) {
   const { error, notice } = await searchParams;
-  const players = db.listPlayers(true);
-  const history = db.buildHistoryIndex();
+  const players = await db.listPlayers(true);
+  const history = await db.buildHistoryIndex();
 
   return (
     <>
