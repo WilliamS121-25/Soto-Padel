@@ -13,7 +13,13 @@ import type {
   Signup,
   SignupStatus,
 } from "@/domain/types";
-import { connectionString, localDataDirectory, openClient, type SqlClient } from "./client";
+import {
+  connectionString,
+  localDataDirectory,
+  openClient,
+  wrongSchemeIn,
+  type SqlClient,
+} from "./client";
 import { ADDED_COLUMNS, INDEXES, SCHEMA } from "./schema";
 
 /**
@@ -669,6 +675,22 @@ export function describeDatabaseError(
   const message = error.message ?? String(error);
   const base = { code, path: location, detail: message };
   const configured = Boolean(connectionString());
+
+  if (code === "WRONG_DATABASE_SCHEME") {
+    const scheme = (error as { scheme?: string }).scheme ?? "unknown";
+    const named =
+      scheme === "mongodb" || scheme === "mongodb+srv"
+        ? "MongoDB"
+        : scheme === "mysql"
+          ? "MySQL"
+          : `a "${scheme}" database`;
+    return {
+      ...base,
+      summary: `The connection string points at ${named}, but this app stores its data in Postgres.`,
+      remedy:
+        "Create a Postgres database and use its connection string instead. In a hosting dashboard it is usually listed under the provider's name rather than as 'Postgres' — Neon and Supabase are both Postgres.",
+    };
+  }
 
   if (!configured && (code === "EROFS" || code === "EACCES" || code === "EPERM")) {
     return {

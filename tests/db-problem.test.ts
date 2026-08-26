@@ -115,3 +115,48 @@ describe("explaining each way the connection can fail", () => {
     }
   });
 });
+
+describe("a connection string for the wrong kind of database", () => {
+  const explainScheme = (scheme: string) =>
+    db.describeDatabaseError(
+      Object.assign(
+        new Error(`Connection string uses the "${scheme}" scheme; this app needs Postgres.`),
+        { code: "WRONG_DATABASE_SCHEME", scheme },
+      ),
+      "the configured DATABASE_URL",
+    );
+
+  it("names MongoDB rather than failing obscurely", () => {
+    for (const scheme of ["mongodb", "mongodb+srv"]) {
+      const problem = explainScheme(scheme);
+      expect(problem.summary).toContain("MongoDB");
+      expect(problem.summary).toMatch(/this app stores its data in Postgres/i);
+    }
+  });
+
+  it("names MySQL too", () => {
+    expect(explainScheme("mysql").summary).toContain("MySQL");
+  });
+
+  it("says where to find a Postgres, since it is rarely listed as 'Postgres'", () => {
+    const problem = explainScheme("mongodb+srv");
+    expect(problem.remedy).toMatch(/Neon/);
+    expect(problem.remedy).toMatch(/Supabase/);
+  });
+
+  it("still reports an unfamiliar scheme usefully", () => {
+    expect(explainScheme("redis").summary).toContain('"redis"');
+  });
+});
+
+describe("recognising a usable connection string", () => {
+  it("accepts the Postgres schemes and rejects the rest", async () => {
+    const { wrongSchemeIn } = await import("@/db/client");
+    expect(wrongSchemeIn("postgres://u:p@host/db")).toBeNull();
+    expect(wrongSchemeIn("postgresql://u:p@host/db")).toBeNull();
+    expect(wrongSchemeIn("POSTGRES://u:p@host/db")).toBeNull();
+    expect(wrongSchemeIn("mongodb+srv://u:p@cluster.mongodb.net/db")).toBe("mongodb+srv");
+    expect(wrongSchemeIn("mysql://u:p@host/db")).toBe("mysql");
+    expect(wrongSchemeIn("garbage")).toBe("garbage");
+  });
+});

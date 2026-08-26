@@ -35,6 +35,20 @@ export function localDataDirectory(): string {
   return resolve(/* turbopackIgnore: true */ process.env.DATABASE_PATH ?? "./data/postgres");
 }
 
+/**
+ * The scheme of a connection string, when it is not one this app can use.
+ *
+ * Worth checking explicitly rather than letting the driver fail: a MongoDB or
+ * MySQL URL produces a confusing low-level error, and "you have connected the
+ * wrong kind of database" is the single most likely thing to have gone wrong
+ * when a connection string does not work at all.
+ */
+export function wrongSchemeIn(url: string): string | null {
+  const scheme = (url.split(":")[0] ?? "").toLowerCase();
+  if (scheme === "postgres" || scheme === "postgresql") return null;
+  return scheme || "unknown";
+}
+
 export function connectionString(): string | undefined {
   // Vercel's Postgres integrations set POSTGRES_URL; most other hosts and the
   // Neon integration set DATABASE_URL. Accept either rather than making someone
@@ -130,6 +144,14 @@ export async function openClient(): Promise<SqlClient> {
   const url = connectionString();
 
   if (url) {
+    const wrong = wrongSchemeIn(url);
+    if (wrong) {
+      throw Object.assign(
+        new Error(`Connection string uses the "${wrong}" scheme; this app needs Postgres.`),
+        { code: "WRONG_DATABASE_SCHEME", scheme: wrong },
+      );
+    }
+
     const { Pool } = await import("pg");
     const pool = new Pool({
       connectionString: url,
