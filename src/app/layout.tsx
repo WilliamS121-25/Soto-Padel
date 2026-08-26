@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import "./globals.css";
+import { databaseProblem } from "@/db";
 import { adminName } from "@/lib/admin";
 import { setNameAction } from "./actions";
+import { DatabaseProblemPage } from "./db-problem";
 import { NavLinks } from "./nav";
 
 export const metadata: Metadata = {
@@ -12,6 +14,11 @@ export const metadata: Metadata = {
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
   const admin = await adminName();
+
+  // Checked once here rather than in every page: if the database cannot be
+  // opened, every route below would throw, and a bare crash page tells an admin
+  // nothing about why.
+  const problem = databaseProblem();
 
   return (
     <html lang="en">
@@ -47,7 +54,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             </details>
           </div>
         </header>
-        <main>{children}</main>
+        <main>{problem ? <DatabaseProblemPage problem={problem} /> : children}</main>
       </body>
     </html>
   );

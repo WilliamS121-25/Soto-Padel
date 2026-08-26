@@ -26,11 +26,16 @@ import type {
  */
 const globalForDb = globalThis as unknown as { sotoPadelDb?: Database.Database };
 
-function open(): Database.Database {
+/** Where the database file is, or would be. */
+export function databasePath(): string {
   // The database path is configuration, so it cannot be known at build time.
   // The ignore comment tells the bundler that on purpose; without it the tracer
   // assumes the worst and copies the entire project into the server output.
-  const path = resolve(/* turbopackIgnore: true */ process.env.DATABASE_PATH ?? "./data/soto-padel.db");
+  return resolve(/* turbopackIgnore: true */ process.env.DATABASE_PATH ?? "./data/soto-padel.db");
+}
+
+function open(): Database.Database {
+  const path = databasePath();
   mkdirSync(dirname(path), { recursive: true });
 
   const db = new Database(path);
@@ -624,3 +629,93 @@ export function applyRatingChanges(
  * corrected by editing the player's rating directly, which is already audited in
  * the rating history.
  */
+
+/* ------------------------------------------------------------- diagnostics -- */
+
+export interface DatabaseProblem {
+  /** The errno, where there is one: EROFS, EACCES, ENOENT and so on. */
+  code: string;
+  /** Where the app tried to put the database. */
+  path: string;
+  /** The underlying error, for an admin to read. */
+  detail: string;
+  /** What is most likely wrong, in plain words. */
+  summary: string;
+  /** What to do about it. */
+  remedy: string;
+}
+
+/**
+ * Turn a failure to open the database into something an admin can act on.
+ *
+ * Pure, so every branch is testable: most of these errnos cannot be provoked on
+ * demand, least of all EROFS, which is the one that matters most because it is
+ * what a serverless host produces.
+ */
+export function describeDatabaseError(
+  error: NodeJS.ErrnoException,
+  path: string,
+): DatabaseProblem {
+  const code = error.code ?? "UNKNOWN";
+  const base = { code, path, detail: error.message };
+
+  switch (code) {
+    case "EROFS":
+      return {
+        ...base,
+        summary: "The filesystem is read-only, so the database cannot be created.",
+        remedy:
+          "This is what a serverless host gives you. The app needs a persistent, writable disk — see the deployment notes in README.md. No environment variable will fix it.",
+      };
+    case "EACCES":
+    case "EPERM":
+      return {
+        ...base,
+        summary: "The app is not allowed to write to that location.",
+        remedy:
+          "Give the process write access to the directory above, or point DATABASE_PATH somewhere it can write.",
+      };
+    case "ENOENT":
+    case "ENOTDIR":
+      return {
+        ...base,
+        summary: "That path cannot be created.",
+        remedy:
+          "Check DATABASE_PATH. Every directory above the file has to be creatable — in a container that usually means a volume mounted there.",
+      };
+    case "ENOSPC":
+      return {
+        ...base,
+        summary: "The disk is full.",
+        remedy: "Free space on the volume, or grow it.",
+      };
+    default:
+      return {
+        ...base,
+        summary: "The database could not be opened.",
+        remedy:
+          "Check DATABASE_PATH and that the disk it points at is mounted and writable.",
+      };
+  }
+}
+
+/**
+ * Check the database can actually be opened, and explain it if not.
+ *
+ * Without this a host that cannot give the app a writable disk produces a bare
+ * crash page: `open()` throws out of `mkdirSync` or the SQLite constructor, no
+ * code catches it, and the admin is left with "server error" and nothing to act
+ * on. The single most common cause is deploying to a serverless platform, where
+ * the filesystem is read-only and no configuration can make SQLite work.
+ *
+ * A failed open caches nothing, so this keeps reporting the problem until it is
+ * actually fixed, and starts working the moment it is.
+ */
+export function databaseProblem(): DatabaseProblem | null {
+  try {
+    getDb().prepare("SELECT 1 AS ok").get();
+    return null;
+  } catch (error) {
+    return describeDatabaseError(error as NodeJS.ErrnoException, databasePath());
+  }
+}
