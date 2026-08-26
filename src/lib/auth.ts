@@ -36,12 +36,44 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(bufA, bufB);
 }
 
-/** True when the supplied passcode matches the configured one. */
-export function passcodeMatches(input: string): boolean {
+/**
+ * Why a sign-in attempt failed.
+ *
+ * The distinctions here are between *causes an admin can act on*: a field they
+ * left blank, or a server that was never configured. What deliberately has no
+ * variants is `WRONG_PASSCODE` — nothing reports how close the attempt was, how
+ * long the passcode should be, or which characters matched. One shared passcode
+ * guards the whole app, so any such hint would turn this form into a way to
+ * narrow it down a guess at a time.
+ */
+export type SignInProblem =
+  | "MISSING_NAME"
+  | "MISSING_PASSCODE"
+  | "NOT_CONFIGURED"
+  | "NO_SESSION_SECRET"
+  | "WRONG_PASSCODE";
+
+/**
+ * Check a sign-in attempt, returning why it failed or null if it is good.
+ *
+ * Server misconfiguration is checked before the passcode so that an app with no
+ * `ADMIN_PASSCODE` set says exactly that, rather than telling an admin their
+ * passcode is wrong when in truth no passcode could ever work.
+ */
+export function checkSignIn(name: string, passcode: string): SignInProblem | null {
+  if (!name.trim()) return "MISSING_NAME";
+
   const expected = process.env.ADMIN_PASSCODE;
   // Fail closed: with no passcode configured, nobody gets in.
-  if (!expected) return false;
-  return safeEqual(input, expected);
+  if (!expected) return "NOT_CONFIGURED";
+
+  // Checked here rather than at signing time, where a missing secret throws and
+  // would surface as a 500 *after* the admin typed the right passcode.
+  if (!process.env.SESSION_SECRET) return "NO_SESSION_SECRET";
+
+  if (!passcode) return "MISSING_PASSCODE";
+  if (!safeEqual(passcode, expected)) return "WRONG_PASSCODE";
+  return null;
 }
 
 export function isConfigured(): boolean {
