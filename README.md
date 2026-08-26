@@ -151,12 +151,52 @@ dependency, and is where the real logic lives. It is covered by the tests in
 
 ## Deployment
 
-The app needs a Node host with a **persistent disk**, because the database is a
-SQLite file. A small VPS, Fly.io with a volume, or Railway all work. Serverless
-platforms that give you a fresh filesystem per request — Vercel included — will
-lose the database between requests unless you move it to hosted Postgres first.
+The database is a SQLite file, so the one hard requirement is a host that gives
+the app a **persistent disk**. Serverless platforms that hand each request a
+fresh, read-only filesystem — **Vercel included** — cannot run it: the app comes
+up, sign-in works because the login page touches no data, and then every page
+behind it fails trying to open the database.
 
-Back up by copying the SQLite file.
+A `Dockerfile` is included and works on any of these.
+
+### Fly.io
+
+```bash
+fly launch --no-deploy                          # create the app, keep fly.toml
+fly volumes create soto_data --size 1 --region lhr
+fly secrets set ADMIN_PASSCODE=... SESSION_SECRET=...
+fly deploy
+```
+
+`fly.toml` already mounts the volume at `/data` and points `DATABASE_PATH` at it.
+
+### Railway or Render
+
+Point the service at this repo; both detect the `Dockerfile`. Then:
+
+- attach a **volume / disk mounted at `/data`**
+- set `ADMIN_PASSCODE` and `SESSION_SECRET`
+- leave `DATABASE_PATH` as `/data/soto-padel.db` (the Dockerfile's default)
+
+### A plain VPS
+
+```bash
+docker build -t soto-padel .
+docker run -d --restart unless-stopped -p 80:3000 \
+  -v /srv/soto-padel:/data \
+  -e ADMIN_PASSCODE=... -e SESSION_SECRET=... \
+  soto-padel
+```
+
+### Whichever you choose
+
+- **Do not run more than one instance.** SQLite has a single writer and one
+  volume; scaling out needs Postgres first (replace `src/db/index.ts`; the whole
+  of `src/domain/` stays as it is).
+- **Back up by copying the database file**, e.g.
+  `fly ssh console -C "cp /data/soto-padel.db /data/backup.db"` then download it.
+- Without `ADMIN_PASSCODE` and `SESSION_SECRET` set, nobody can sign in — the
+  login page says which one is missing.
 
 ## What it deliberately does not do
 
