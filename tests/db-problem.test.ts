@@ -98,7 +98,7 @@ describe("explaining each way the connection can fail", () => {
     delete process.env.DATABASE_URL;
     const problem = explain("EACCES");
     expect(problem.summary).toMatch(/No DATABASE_URL is set/i);
-    expect(problem.remedy).toMatch(/Vercel|dashboard/i);
+    expect(problem.remedy).toMatch(/DATABASE_URL/);
   });
 
   it("still gives something useful for an unrecognised error", () => {
@@ -158,5 +158,128 @@ describe("recognising a usable connection string", () => {
     expect(wrongSchemeIn("mongodb+srv://u:p@cluster.mongodb.net/db")).toBe("mongodb+srv");
     expect(wrongSchemeIn("mysql://u:p@host/db")).toBe("mysql");
     expect(wrongSchemeIn("garbage")).toBe("garbage");
+  });
+});
+
+/**
+ * Everything below came out of one real deployment, which showed
+ * "ERROR UNKNOWN / DETAIL [object Object]" over a path that made it look as
+ * though a local database was in use. Every line of that was wrong.
+ */
+describe("a serverless host with no DATABASE_URL", () => {
+  const serverless = <T,>(run: () => T): T => {
+    process.env.VERCEL = "1";
+    delete process.env.DATABASE_URL;
+    delete process.env.POSTGRES_URL;
+    try {
+      return run();
+    } finally {
+      delete process.env.VERCEL;
+    }
+  };
+
+  it("refuses to pretend a local database is being used", () => {
+    const shown = serverless(() => db.databaseLocation());
+    expect(shown).toMatch(/DATABASE_URL is not set/i);
+    expect(shown).toContain("Vercel");
+    expect(shown).not.toMatch(/PGlite/i);
+  });
+
+  it("will not fall back to a local database it cannot write", async () => {
+    const { openClient } = await import("@/db/client");
+    const thrown = await serverless(() => openClient().then(() => null, (error) => error));
+    expect(thrown).not.toBeNull();
+    expect((thrown as { code?: string }).code).toBe("NO_DATABASE_URL");
+  });
+
+  it("names the deploy-after-setting trap, which is the usual cause", () => {
+    const problem = serverless(() =>
+      db.describeDatabaseError(
+        Object.assign(new Error("DATABASE_URL is not set"), {
+          code: "NO_DATABASE_URL",
+          host: "Vercel",
+        }),
+        "nowhere",
+      ),
+    );
+    expect(problem.summary).toMatch(/DATABASE_URL is not set/i);
+    expect(problem.summary).toContain("Vercel");
+    expect(problem.remedy).toMatch(/redeploy/i);
+    expect(problem.remedy).toMatch(/Production only|environment you are looking at/i);
+  });
+
+  it("blames the missing connection string whatever the fallback threw", () => {
+    // The real failure arrived from WebAssembly with no code at all, and fell
+    // through to a generic "check DATABASE_URL and that the database is
+    // running", which is useless when there is no database.
+    const problem = serverless(() => db.describeDatabaseError({ nested: { rc: 1 } }, "nowhere"));
+    expect(problem.summary).toMatch(/DATABASE_URL is not set/i);
+    expect(problem.remedy).toMatch(/redeploy/i);
+  });
+});
+
+describe("reading a thrown value of any shape", () => {
+  const detail = (thrown: unknown) => db.describeDatabaseError(thrown, "wherever").detail;
+  const code = (thrown: unknown) => db.describeDatabaseError(thrown, "wherever").code;
+
+  it("never shows [object Object]", () => {
+    for (const thrown of [
+      { rc: 1 },
+      { message: 42 },
+      Object.create(null) as object,
+      new Error(""),
+      undefined,
+      null,
+      7,
+    ]) {
+      expect(detail(thrown)).not.toContain("[object Object]");
+      expect(detail(thrown)).toBeTruthy();
+    }
+  });
+
+  it("reads a plain object's message, and names its keys when it has none", () => {
+    expect(detail({ message: "PGlite failed to initialise" })).toBe("PGlite failed to initialise");
+    expect(detail({ rc: 1, sig: null })).toMatch(/rc/);
+  });
+
+  it("finds a code hidden in cause rather than reporting UNKNOWN", () => {
+    expect(code(Object.assign(new Error("connect failed"), { cause: { code: "ENOTFOUND" } }))).toBe(
+      "ENOTFOUND",
+    );
+    expect(code(new Error("no code anywhere"))).toBe("UNKNOWN");
+  });
+
+  it("does not loop on an error that causes itself", () => {
+    const looping: { message: string; cause?: unknown } = { message: "round we go" };
+    looping.cause = looping;
+    expect(code(looping)).toBe("UNKNOWN");
+    expect(detail(looping)).toBe("round we go");
+  });
+
+  it("reports the cause's message alongside the wrapper's", () => {
+    expect(detail(new Error("could not open", { cause: new Error("EROFS") }))).toContain("EROFS");
+  });
+});
+
+describe("a blank environment variable", () => {
+  it("counts as unset rather than as configuration", async () => {
+    const { connectionString, localDataDirectory } = await import("@/db/client");
+    const path = process.env.DATABASE_PATH;
+    try {
+      // A dashboard will store an empty value, and an empty DATABASE_PATH used
+      // to resolve to the working directory — which is how a deployment came to
+      // report its database as living in /var/task.
+      process.env.DATABASE_URL = "   ";
+      expect(connectionString()).toBeUndefined();
+      process.env.DATABASE_PATH = "";
+      expect(localDataDirectory()).toMatch(/data[/\\]postgres$/);
+      // A connection string pasted from a web page often carries a newline.
+      process.env.DATABASE_URL = " postgres://u:p@host/db\n";
+      expect(connectionString()).toBe("postgres://u:p@host/db");
+    } finally {
+      delete process.env.DATABASE_URL;
+      if (path === undefined) delete process.env.DATABASE_PATH;
+      else process.env.DATABASE_PATH = path;
+    }
   });
 });

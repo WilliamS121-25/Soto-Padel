@@ -43,8 +43,9 @@ export function DatabaseProblemPage({ problem }: { problem: DatabaseProblem }) {
       </table>
 
       <p className="small muted" style={{ marginTop: 14, marginBottom: 0 }}>
-        Nothing has been lost. The app stores everything in one SQLite file, and it
-        will pick that file up as soon as it can reach it.
+        This is a connection problem, not a data problem: nothing that was already
+        saved has been touched. The app checks again on every request, so it starts
+        working the moment the database is reachable — no restart needed.
       </p>
     </div>
   );

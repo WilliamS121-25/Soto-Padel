@@ -170,13 +170,18 @@ looks like:
    otherwise opens its own connection and exhausts the limit.
 3. In Vercel: **Project → Settings → Environment Variables**, add
    `DATABASE_URL` with that value, for all environments.
-4. Redeploy.
+4. **Redeploy.** This step is not optional: an environment variable added after
+   a deployment was built does not reach it, and the running app carries on as
+   though the variable were absent.
 
 The schema is created on first boot. Nothing else is required — no other
 secrets, no volume, no build configuration.
 
 If the app cannot reach the database it says so on screen, naming the error and
-what to change, with the credentials stripped out of the URL.
+what to change, with the credentials stripped out of the URL. Two things it
+will tell you that are easy to miss otherwise: a variable set for Production
+only is absent from a preview URL, and a variable stored with an empty value
+counts as unset.
 
 ### Anywhere else, with a managed Postgres
 
@@ -193,7 +198,9 @@ docker run -d --restart unless-stopped -p 80:3000 \
 ### Anywhere else, with no database server
 
 Leave `DATABASE_URL` unset and give the container a volume at `/data`; the app
-runs Postgres in-process against it. `fly.toml` is set up this way:
+runs Postgres in-process against it. This needs a real writable disk, so it is
+for a host that has one — on a serverless platform the app refuses it and asks
+for a `DATABASE_URL` instead, rather than failing part-way through a request. `fly.toml` is set up this way:
 
 ```bash
 fly launch --no-deploy

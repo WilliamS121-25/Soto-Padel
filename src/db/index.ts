@@ -17,6 +17,7 @@ import {
   connectionString,
   localDataDirectory,
   openClient,
+  serverlessHost,
   wrongSchemeIn,
   type SqlClient,
 } from "./client";
@@ -653,7 +654,13 @@ export interface DatabaseProblem {
 /** A description of where the database lives, safe to show — never the password. */
 export function databaseLocation(): string {
   const url = connectionString();
-  if (!url) return `${localDataDirectory()} (local PGlite, no DATABASE_URL set)`;
+  if (!url) {
+    const host = serverlessHost();
+    // Naming the local directory on a serverless host is actively misleading:
+    // it reads as "the database is there", when in fact there is no database.
+    if (host) return `nowhere — DATABASE_URL is not set (running on ${host})`;
+    return `${localDataDirectory()} (local PGlite, no DATABASE_URL set)`;
+  }
   try {
     const parsed = new URL(url);
     return `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
@@ -663,18 +670,95 @@ export function databaseLocation(): string {
 }
 
 /**
+ * The error code, looked for in every place one hides.
+ *
+ * Not every failure here is a `NodeJS.ErrnoException`: PGlite fails inside
+ * WebAssembly and can throw a plain object, and a driver may wrap the real
+ * errno in `cause`. Reading only `.code` reported `UNKNOWN` for exactly the
+ * failures that most needed naming.
+ */
+function errorCode(error: unknown, depth = 0): string {
+  const like = error as { code?: unknown; errno?: unknown; cause?: unknown } | null | undefined;
+  if (typeof like?.code === "string" && like.code) return like.code;
+  if (typeof like?.errno === "string" && like.errno) return like.errno;
+  if (like?.cause != null && like.cause !== error && depth < 4) {
+    const inherited = errorCode(like.cause, depth + 1);
+    if (inherited !== "UNKNOWN") return inherited;
+  }
+  return "UNKNOWN";
+}
+
+/**
+ * The underlying error as text an admin can read.
+ *
+ * Anything can be thrown, and `String(value)` on a plain object gives
+ * "[object Object]" — which is what the diagnostics page showed on a real
+ * deployment, telling the reader nothing whatsoever.
+ */
+function errorDetail(error: unknown, depth = 0): string {
+  if (typeof error === "string") return error;
+  if (error == null) return "no further detail was available";
+
+  if (error instanceof Error) {
+    const cause =
+      error.cause != null && error.cause !== error && depth < 3
+        ? ` (caused by ${errorDetail(error.cause, depth + 1)})`
+        : "";
+    return `${error.message || error.name}${cause}`;
+  }
+
+  if (typeof error === "object") {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string" && message) return message;
+    try {
+      const json = JSON.stringify(error);
+      if (json && json !== "{}" && json !== "null") return json;
+    } catch {
+      // Circular, or something that refuses to serialise. Fall through.
+    }
+    const keys = Object.keys(error as object);
+    return keys.length
+      ? `a ${error.constructor?.name ?? "value"} carrying no message (${keys.join(", ")})`
+      : `an empty ${error.constructor?.name ?? "object"} was thrown`;
+  }
+
+  return `${typeof error} was thrown: ${String(error)}`;
+}
+
+/**
  * Turn a failure to reach the database into something an admin can act on.
  *
  * Pure, so every branch is testable: most of these cannot be provoked on demand.
  */
-export function describeDatabaseError(
-  error: NodeJS.ErrnoException,
-  location: string,
-): DatabaseProblem {
-  const code = error.code ?? "UNKNOWN";
-  const message = error.message ?? String(error);
+export function describeDatabaseError(error: unknown, location: string): DatabaseProblem {
+  const code = errorCode(error);
+  const message = errorDetail(error);
   const base = { code, path: location, detail: message };
   const configured = Boolean(connectionString());
+  const host = (error as { host?: string } | null)?.host ?? serverlessHost();
+
+  /**
+   * No connection string at all. The commonest cause by a distance is a
+   * variable added to a hosting dashboard *after* the running deployment was
+   * built, which does not reach it until the next deploy — so say that rather
+   * than only "set DATABASE_URL", which the reader believes they have done.
+   */
+  const noConnectionString = (): DatabaseProblem =>
+    host
+      ? {
+          ...base,
+          summary: `DATABASE_URL is not set, so the app has nowhere to keep its data: ${host} gives it no writable disk of its own.`,
+          remedy:
+            "Add DATABASE_URL, a Postgres connection string, to the project's environment variables and then redeploy — a variable added after a deployment was built does not reach it until the next one. If it is already there, check it is enabled for the environment you are looking at: one set for Production only is missing from a preview URL, and a blank value counts as unset.",
+        }
+      : {
+          ...base,
+          summary: "No DATABASE_URL is set, and the local fallback database could not be opened.",
+          remedy:
+            "Set DATABASE_URL to a Postgres connection string, or check the local data directory is writable.",
+        };
+
+  if (code === "NO_DATABASE_URL") return noConnectionString();
 
   if (code === "WRONG_DATABASE_SCHEME") {
     const scheme = (error as { scheme?: string }).scheme ?? "unknown";
@@ -692,14 +776,6 @@ export function describeDatabaseError(
     };
   }
 
-  if (!configured && (code === "EROFS" || code === "EACCES" || code === "EPERM")) {
-    return {
-      ...base,
-      summary: "No DATABASE_URL is set, and the local database cannot be written either.",
-      remedy:
-        "Set DATABASE_URL to a Postgres connection string. On Vercel, adding a database from the dashboard sets it for you.",
-    };
-  }
   if (code === "ENOTFOUND" || code === "EAI_AGAIN") {
     return {
       ...base,
@@ -744,12 +820,14 @@ export function describeDatabaseError(
         "Use your provider's pooled connection string, and keep DATABASE_POOL_MAX at 1 on a serverless host.",
     };
   }
+  // Last, because a connection string that is missing cannot have produced any
+  // of the failures above, but it can produce anything at all down here.
+  if (!configured) return noConnectionString();
+
   return {
     ...base,
     summary: "The database could not be reached.",
-    remedy: configured
-      ? "Check DATABASE_URL and that the database is running and reachable from here."
-      : "Set DATABASE_URL to a Postgres connection string, or check the local data directory is writable.",
+    remedy: "Check DATABASE_URL and that the database is running and reachable from here.",
   };
 }
 
@@ -770,6 +848,6 @@ export async function databaseProblem(): Promise<DatabaseProblem | null> {
     await db.query("SELECT 1 AS ok");
     return null;
   } catch (error) {
-    return describeDatabaseError(error as NodeJS.ErrnoException, databaseLocation());
+    return describeDatabaseError(error, databaseLocation());
   }
 }

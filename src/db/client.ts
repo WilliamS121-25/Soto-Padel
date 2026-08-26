@@ -30,9 +30,40 @@ export interface SqlClient {
   transaction<T>(run: (tx: SqlClient) => Promise<T>): Promise<T>;
 }
 
+/**
+ * An environment variable, with blank treated as unset.
+ *
+ * A hosting dashboard will happily store an empty value, and a connection
+ * string pasted out of a web page often arrives with a newline on the end.
+ * `??` alone treats both as configuration: an empty DATABASE_PATH resolves to
+ * the working directory, and an empty DATABASE_URL sends the app down the
+ * node-postgres path with nothing to connect to.
+ */
+function env(name: string): string | undefined {
+  const raw = process.env[name];
+  const value = raw?.trim();
+  return value ? value : undefined;
+}
+
 /** Where PGlite keeps its data when no DATABASE_URL is configured. */
 export function localDataDirectory(): string {
-  return resolve(/* turbopackIgnore: true */ process.env.DATABASE_PATH ?? "./data/postgres");
+  return resolve(/* turbopackIgnore: true */ env("DATABASE_PATH") ?? "./data/postgres");
+}
+
+/**
+ * The serverless platform this is running on, if it is one.
+ *
+ * Worth knowing because those platforms give the app no writable disk, so the
+ * local PGlite fallback cannot work there at all: without a DATABASE_URL the
+ * app has nowhere to keep anything, and saying so is far more use than whatever
+ * the failed fallback throws.
+ */
+export function serverlessHost(): string | null {
+  if (env("VERCEL")) return "Vercel";
+  if (env("AWS_LAMBDA_FUNCTION_NAME")) return "AWS Lambda";
+  if (env("NETLIFY")) return "Netlify";
+  if (env("K_SERVICE")) return "Cloud Run";
+  return null;
 }
 
 /**
@@ -53,7 +84,7 @@ export function connectionString(): string | undefined {
   // Vercel's Postgres integrations set POSTGRES_URL; most other hosts and the
   // Neon integration set DATABASE_URL. Accept either rather than making someone
   // rename a variable the platform wrote for them.
-  return process.env.DATABASE_URL ?? process.env.POSTGRES_URL ?? undefined;
+  return env("DATABASE_URL") ?? env("POSTGRES_URL");
 }
 
 /* ------------------------------------------------------------ node-postgres */
@@ -167,6 +198,16 @@ export async function openClient(): Promise<SqlClient> {
       ssl: url.includes("sslmode=disable") ? false : { rejectUnauthorized: false },
     });
     return fromPool(pool);
+  }
+
+  const host = serverlessHost();
+  if (host) {
+    throw Object.assign(
+      new Error(
+        `DATABASE_URL is not set, and ${host} gives the app no writable disk to fall back on.`,
+      ),
+      { code: "NO_DATABASE_URL", host },
+    );
   }
 
   const directory = localDataDirectory();
