@@ -7,8 +7,8 @@ Guidance for Claude Code and other AI assistants working in this repository.
 A web app for running the social padel mixin at Soto Padel: a club organiser
 takes signups from a WhatsApp group, keeps a reserve list, draws level-matched
 line-ups that mix up partners and opponents, and produces a payment schedule to
-paste back into the group. It is shared between a handful of admins behind one
-passcode.
+paste back into the group. It is shared between a handful of admins over a link,
+with no sign-in.
 
 `README.md` explains the product and how a mixin is run. This file covers how the
 code is arranged and the conventions to follow.
@@ -19,10 +19,10 @@ code is arranged and the conventions to follow.
 | --- | --- |
 | Framework | Next.js 16 (App Router, Turbopack), React 19 |
 | Language | TypeScript, `strict` **and `noUncheckedIndexedAccess`** |
-| Database | SQLite via `better-sqlite3`, one file, schema applied on boot |
+| Database | Postgres. `pg` against `DATABASE_URL`; in-process PGlite when unset |
 | Tests | Vitest |
 | Styling | One hand-written stylesheet, `src/app/globals.css`. No CSS framework. |
-| Auth | Shared passcode + HMAC-signed cookie, `src/lib/auth.ts` |
+| Auth | **None.** `src/lib/admin.ts` holds a display name, not a credential |
 
 There is no ESLint setup; `npm run check` (typecheck + tests) is the gate.
 
@@ -38,9 +38,11 @@ There is no ESLint setup; `npm run check` (typecheck + tests) is the gate.
 | Production build | `npm run build` |
 | Serve production build | `npm start` |
 
-`ADMIN_PASSCODE` and `SESSION_SECRET` must be set or nobody can sign in — see
-`.env.example`. The **build** does not need them: every route is server-rendered
-on demand, so they are only read at request time. Do not add dummy values to CI.
+Nothing has to be configured to run or test the app: with no `DATABASE_URL` it
+runs Postgres in-process (PGlite) against `./data/postgres`. In production set
+`DATABASE_URL` — see `.env.example`. The **build** never needs it: every route is
+server-rendered on demand, so it is only read at request time. Do not add a dummy
+value to CI.
 
 CI (`.github/workflows/ci.yml`) runs `npm run check` then `npm run build` on
 Node 22 for every pull request. It calls the `check` script rather than
@@ -52,8 +54,8 @@ if you add a step to `check`, CI picks it up.
 ```
 src/
 ├── domain/     Pure logic. No framework, no database, no I/O.
-├── db/         SQLite schema and repository functions.
-├── lib/        auth.ts — passcode check and signed cookie.
+├── db/         Postgres schema, client abstraction, repository functions.
+├── lib/        admin.ts — the display name changes are recorded against.
 └── app/        Next.js App Router: pages, server actions, client components.
 tests/          Vitest suites, one per domain module, plus db.test.ts.
 ```
@@ -144,16 +146,18 @@ per-player deltas, and `applyRatingChanges` writes them exactly once per session
   silently invented corrupts every future draw.
 - **`noUncheckedIndexedAccess` is on.** Array and `Map` access is
   `T | undefined`. Handle it; do not reach for `!` to shut it up.
-- Server actions live in `src/app/actions.ts`, all guarded by `requireAdmin()`.
-  They validate, then redirect back with `?notice=` or `?error=`, which the pages
-  render. Client components are only used where interactivity is genuinely
+- Server actions live in `src/app/actions.ts` and **nothing guards them** — the
+  app has no authentication at all, by request. They validate, then redirect back
+  with `?notice=` or `?error=`, which the pages render. Client components are only used where interactivity is genuinely
   needed: `court-picker.tsx` and `copy-button.tsx`.
 
 ## Testing
 
-Around 130 tests. Domain modules are tested directly; `tests/db.test.ts` runs
-against a real SQLite file in a temp directory, importing `@/db` lazily so
-`DATABASE_PATH` is set before the connection opens. `tests/fixtures.ts` has
+Around 160 tests. Domain modules are tested directly; the database suites run
+against real Postgres — PGlite in a temp directory — importing `@/db` lazily so
+`DATABASE_PATH` is set before the connection opens. They warm the connection in
+`beforeAll`, because PGlite compiles WebAssembly on its first query and that
+cost once overran a per-test timeout. `tests/fixtures.ts` has
 builders — `makeSession`, `makeSignup`, `ladder` (n players spread over a rating
 range), `court`.
 
@@ -183,8 +187,8 @@ noise rather than quality.
   that rewrites existing data needs a real migration story first.
 - `CREATE TABLE IF NOT EXISTS` will not add a column to a table that already
   exists, so columns added after the first release go in the `ADDED_COLUMNS` list
-  and are applied by `addMissingColumns` on boot after checking
-  `PRAGMA table_info`. Add to that list when adding a column, or existing
+  and are applied by `addMissingColumns` on boot with
+  `ADD COLUMN IF NOT EXISTS`. Add to that list when adding a column, or existing
   databases will not gain it. `tests/db-migration.test.ts` opens a database built
   on the pre-scores schema and checks it upgrades with its rows intact.
 - Regenerating a draw clears its scores (`replaceMatches` writes no score
@@ -196,11 +200,26 @@ noise rather than quality.
 - The database path is read from `DATABASE_PATH` at connection time and carries a
   `/* turbopackIgnore: true */` comment. Removing it makes the bundler trace the
   whole project into the server output.
-- `better-sqlite3` is native and listed in `serverExternalPackages` in
-  `next.config.ts`. It must not be bundled.
-- Deployment needs a persistent disk. Serverless platforms with an ephemeral
-  filesystem will lose the database; moving to Postgres means replacing
-  `src/db/index.ts`, and the domain layer would not need to change.
+- `pg` and `@electric-sql/pglite` are listed in `serverExternalPackages` in
+  `next.config.ts`. They must not be bundled.
+- **The repository is async.** Every call awaits, which means a page cannot
+  gather data inside a JSX `.map()`; collect it with `Promise.all` first, as
+  `src/app/page.tsx` does.
+- **Boot order in `src/db/index.ts` is load-bearing**: tables, then
+  `addMissingColumns`, then indexes. `CREATE TABLE IF NOT EXISTS` leaves an
+  existing table alone, so on an upgrade an index over a newly added column is
+  created before the column exists and takes the whole boot down.
+- **The PGlite fallback needs a real writable disk**, so `openClient` refuses it
+  on a serverless host (`serverlessHost()`) and reports a missing `DATABASE_URL`
+  instead. Falling through produced an unreadable WebAssembly failure over a
+  path that implied a database was in use.
+- **Environment variables are read through `env()` in `src/db/client.ts`, which
+  treats blank as unset** and trims. A dashboard stores an empty value happily,
+  and an empty `DATABASE_PATH` used to resolve to the working directory.
+- Anything shown on the diagnostics page goes through `databaseLocation()` and
+  `describeDatabaseError()`. Both are pure and tested; neither may print a
+  connection string with credentials in it, and `errorDetail` exists because
+  `String(thrown)` renders a plain object as `[object Object]`.
 - `signups.note` is stored and accepted by `addSignup`, but no form supplies it
   yet. It is a spare field, not dead code to delete on sight.
 
@@ -213,8 +232,9 @@ Flagged so they are not mistaken for requirements:
   `RATING_SCALE_PRESETS` in case the club means something else.
 - Cost is modelled as a price per court per 30 minutes, split by games played.
   Per-player pricing or peak/off-peak rates would need a change.
-- Auth is one shared passcode. Anyone with it can act as any name. Fine for a
-  few organisers, not fine if this ever holds anything sensitive.
+- There is no authentication: anyone with the URL can act as any name, and the
+  admin name is a label, not a credential. Fine for a link shared between a few
+  organisers, not fine if this ever holds anything sensitive.
 - Nothing tracks whether a payment was actually collected — only the schedule.
 - A 30-minute block is scored as games won per team, capped at
   `MAX_GAMES_PER_BLOCK`. Points, sets and tiebreaks are not modelled.

@@ -3,7 +3,6 @@ import * as db from "@/db";
 import { allocateSignups } from "@/domain/signups";
 import { formatDateLong, formatSlotCount, formatTime } from "@/domain/time";
 import { computeCapacity } from "@/domain/timeline";
-import { requireAdmin } from "@/lib/auth";
 import { createSessionAction } from "./actions";
 import { CourtPicker } from "./court-picker";
 
@@ -20,9 +19,22 @@ export default async function DashboardPage({
 }: {
   searchParams: Promise<{ error?: string; notice?: string }>;
 }) {
-  await requireAdmin();
   const { error, notice } = await searchParams;
-  const sessions = db.listSessions();
+  const sessions = await db.listSessions();
+
+  // Each row needs its signups, and JSX cannot await inside a map, so the rows
+  // are assembled first. The queries are independent, so they run together
+  // rather than one session at a time.
+  const rows = await Promise.all(
+    sessions.map(async (session) => {
+      const allocation = allocateSignups(session, await db.listSignups(session.id));
+      return {
+        session,
+        allocation,
+        capacity: computeCapacity(session, allocation.committedPlayerBlocks),
+      };
+    }),
+  );
 
   return (
     <>
@@ -50,10 +62,7 @@ export default async function DashboardPage({
                 </tr>
               </thead>
               <tbody>
-                {sessions.map((session) => {
-                  const signups = db.listSignups(session.id);
-                  const allocation = allocateSignups(session, signups);
-                  const capacity = computeCapacity(session, allocation.committedPlayerBlocks);
+                {rows.map(({ session, allocation, capacity }) => {
                   return (
                     <tr key={session.id}>
                       <td>

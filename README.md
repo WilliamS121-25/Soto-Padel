@@ -12,23 +12,20 @@ accounts to provision.
 
 ```bash
 npm install
-cp .env.example .env       # then edit it — see below
 npm run dev                # http://localhost:3000
 ```
 
-`.env` needs two values before anyone can sign in:
+That is the whole setup. With no `DATABASE_URL` configured the app runs Postgres
+**in-process** — PGlite, compiled to WebAssembly — against `./data/postgres`, so
+there is no database server to install and nothing to configure.
 
-| Variable | What it is |
-| --- | --- |
-| `ADMIN_PASSCODE` | The passcode you give the organisers. Until it is set, nobody can sign in. |
-| `SESSION_SECRET` | Any long random string; signs the login cookie. Changing it signs everyone out. |
-| `DATABASE_PATH` | Where the SQLite file lives. Defaults to `./data/soto-padel.db`. |
+**There is no sign-in.** Anyone who can reach the app can use it, and can read
+and change everything in it — including player phone numbers, ratings and
+payment schedules. Keep it on a private network, behind your host's access
+control, or on a URL you only give to the organisers.
 
-Generate a secret with `openssl rand -base64 32`.
-
-Everyone signs in with the same passcode and types their own name. The name is
-not a password — it just records who changed what, so rating history reads
-sensibly.
+The name in the top right is recorded against changes so the rating history
+reads sensibly. It is not a password and anyone can set it to anything.
 
 ## Running a mixin
 
@@ -151,52 +148,77 @@ dependency, and is where the real logic lives. It is covered by the tests in
 
 ## Deployment
 
-The database is a SQLite file, so the one hard requirement is a host that gives
-the app a **persistent disk**. Serverless platforms that hand each request a
-fresh, read-only filesystem — **Vercel included** — cannot run it: the app comes
-up, sign-in works because the login page touches no data, and then every page
-behind it fails trying to open the database.
+The app stores everything in Postgres. Give it a `DATABASE_URL` and it will run
+anywhere, serverless included.
 
-A `Dockerfile` is included and works on any of these.
+### Vercel
 
-### Fly.io
+The app needs one environment variable, `DATABASE_URL`. Any Postgres will do.
 
-```bash
-fly launch --no-deploy                          # create the app, keep fly.toml
-fly volumes create soto_data --size 1 --region lhr
-fly secrets set ADMIN_PASSCODE=... SESSION_SECRET=...
-fly deploy
-```
+Vercel offers databases through a marketplace of providers rather than its own
+Postgres product, and that dashboard changes; if **Storage → Create Database**
+offers a Postgres (Neon, Supabase and others appear there), take it, and Vercel
+sets the connection string for you.
 
-`fly.toml` already mounts the volume at `/data` and points `DATABASE_PATH` at it.
+If it does not, set the variable yourself — this works whatever the dashboard
+looks like:
 
-### Railway or Render
+1. Create a free Postgres at [neon.tech](https://neon.tech) or
+   [supabase.com](https://supabase.com).
+2. Copy the **pooled** connection string. On Neon that is the one with
+   `-pooler` in the hostname; it matters on serverless, where every instance
+   otherwise opens its own connection and exhausts the limit.
+3. In Vercel: **Project → Settings → Environment Variables**, add
+   `DATABASE_URL` with that value, for all environments.
+4. **Redeploy.** This step is not optional: an environment variable added after
+   a deployment was built does not reach it, and the running app carries on as
+   though the variable were absent.
 
-Point the service at this repo; both detect the `Dockerfile`. Then:
+The schema is created on first boot. Nothing else is required — no other
+secrets, no volume, no build configuration.
 
-- attach a **volume / disk mounted at `/data`**
-- set `ADMIN_PASSCODE` and `SESSION_SECRET`
-- leave `DATABASE_PATH` as `/data/soto-padel.db` (the Dockerfile's default)
+If the app cannot reach the database it says so on screen, naming the error and
+what to change, with the credentials stripped out of the URL. Two things it
+will tell you that are easy to miss otherwise: a variable set for Production
+only is absent from a preview URL, and a variable stored with an empty value
+counts as unset.
 
-### A plain VPS
+### Anywhere else, with a managed Postgres
+
+Set `DATABASE_URL` (Neon, Supabase, Railway, RDS, or your own server) and run
+the included `Dockerfile`:
 
 ```bash
 docker build -t soto-padel .
 docker run -d --restart unless-stopped -p 80:3000 \
-  -v /srv/soto-padel:/data \
-  -e ADMIN_PASSCODE=... -e SESSION_SECRET=... \
+  -e DATABASE_URL='postgres://...?sslmode=require' \
   soto-padel
+```
+
+### Anywhere else, with no database server
+
+Leave `DATABASE_URL` unset and give the container a volume at `/data`; the app
+runs Postgres in-process against it. This needs a real writable disk, so it is
+for a host that has one — on a serverless platform the app refuses it and asks
+for a `DATABASE_URL` instead, rather than failing part-way through a request. `fly.toml` is set up this way:
+
+```bash
+fly launch --no-deploy
+fly volumes create soto_data --size 1 --region lhr
+fly deploy
 ```
 
 ### Whichever you choose
 
-- **Do not run more than one instance.** SQLite has a single writer and one
-  volume; scaling out needs Postgres first (replace `src/db/index.ts`; the whole
-  of `src/domain/` stays as it is).
-- **Back up by copying the database file**, e.g.
-  `fly ssh console -C "cp /data/soto-padel.db /data/backup.db"` then download it.
-- Without `ADMIN_PASSCODE` and `SESSION_SECRET` set, nobody can sign in — the
-  login page says which one is missing.
+- **On a serverless host, use your provider's pooled connection string** and
+  leave `DATABASE_POOL_MAX` at 1. Every instance holds its own pool, and that is
+  how a Postgres connection limit gets exhausted.
+- **Do not run more than one instance against the in-process database.** It
+  lives on one volume and has a single writer. Scaling out means `DATABASE_URL`.
+- **Back up** with your provider's snapshots, or `pg_dump` against
+  `DATABASE_URL`.
+- **There is no sign-in**, so whoever can reach the URL can change everything.
+  Put it behind your host's access control if that matters.
 
 ## What it deliberately does not do
 

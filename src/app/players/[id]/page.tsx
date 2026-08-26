@@ -2,7 +2,6 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import * as db from "@/db";
 import { formatRating, ratingBand, ratingOptions } from "@/domain/rating";
-import { requireAdmin } from "@/lib/auth";
 import { setRatingAction, updatePlayerAction } from "../../actions";
 
 export default async function PlayerPage({
@@ -12,16 +11,15 @@ export default async function PlayerPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ error?: string; notice?: string }>;
 }) {
-  await requireAdmin();
   const { id } = await params;
   const { error, notice } = await searchParams;
 
-  const player = db.getPlayer(id);
+  const player = await db.getPlayer(id);
   if (!player) notFound();
 
-  const ratingHistory = db.listRatingHistory(id);
-  const history = db.buildHistoryIndex();
-  const names = new Map(db.listPlayers(true).map((p) => [p.id, p.name]));
+  const ratingHistory = await db.listRatingHistory(id);
+  const history = await db.buildHistoryIndex();
+  const names = new Map((await db.listPlayers(true)).map((p) => [p.id, p.name]));
   const nameOf = (playerId: string) => names.get(playerId) ?? "Unknown";
 
   const partners = history.partnersOf(id);

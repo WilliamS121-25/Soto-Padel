@@ -1,28 +1,27 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-// Safe to import at the top: it is pure and never opens a connection.
+import { PGlite } from "@electric-sql/pglite";
 import { ratingChangesFromResults } from "@/domain/rating-updates";
 
 /**
- * Opens a database created by the version that predates score recording and
- * checks it is upgraded in place, with its existing rows intact. Migrations are
- * where data quietly disappears, so this is worth its own file.
+ * Opens a database created by a version that predates score recording and
+ * checks it is upgraded in place with its rows intact. Migrations are where
+ * data quietly disappears, so this is worth its own file.
  */
 let db: typeof import("@/db");
 let dir: string;
-let dbPath: string;
 
+/** The schema as it stood before scores, the applied marker and the sequence. */
 const OLD_SCHEMA = `
 CREATE TABLE players (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL, phone TEXT, rating REAL NOT NULL,
-  active INTEGER NOT NULL DEFAULT 1, notes TEXT, created_at TEXT NOT NULL
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, phone TEXT, rating DOUBLE PRECISION NOT NULL,
+  active BOOLEAN NOT NULL DEFAULT TRUE, notes TEXT, created_at TEXT NOT NULL
 );
 CREATE TABLE rating_changes (
-  id TEXT PRIMARY KEY, player_id TEXT NOT NULL, previous_rating REAL,
-  new_rating REAL NOT NULL, changed_at TEXT NOT NULL, changed_by TEXT NOT NULL, reason TEXT
+  id TEXT PRIMARY KEY, player_id TEXT NOT NULL, previous_rating DOUBLE PRECISION,
+  new_rating DOUBLE PRECISION NOT NULL, changed_at TEXT NOT NULL, changed_by TEXT NOT NULL, reason TEXT
 );
 CREATE TABLE sessions (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, date TEXT NOT NULL,
@@ -50,64 +49,71 @@ CREATE TABLE matches (
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "soto-padel-migrate-"));
-  dbPath = join(dir, "old.db");
+  const dataDir = join(dir, "pg");
 
-  // Build a database exactly as the previous version left it, with real data.
-  const old = new Database(dbPath);
-  old.exec(OLD_SCHEMA);
-  const insertPlayer = old.prepare(
-    "INSERT INTO players (id, name, phone, rating, active, notes, created_at) VALUES (?, ?, NULL, ?, 1, NULL, ?)",
-  );
+  // Build a database exactly as the previous version left it, with real rows.
+  const old = await PGlite.create(dataDir);
+  await old.exec(OLD_SCHEMA);
   for (const [id, name, rating] of [
     ["p1", "Legacy Ana", 3.5],
     ["p2", "Legacy Luis", 4],
     ["p3", "Legacy Marta", 4.25],
     ["p4", "Legacy Javi", 3.75],
   ] as const) {
-    insertPlayer.run(id, name, rating, "2025-08-01T00:00:00.000Z");
+    await old.query(
+      "INSERT INTO players (id, name, phone, rating, active, notes, created_at) VALUES ($1, $2, NULL, $3, TRUE, NULL, $4)",
+      [id, name, rating, "2025-08-01T00:00:00.000Z"],
+    );
   }
-  old.prepare(
-    `INSERT INTO sessions (id, name, date, start_minutes, slot_count, cost_per_court_slot, currency, status, created_at, created_by)
-     VALUES ('s1', 'Legacy Mixin', '2025-08-29', 1080, 1, 600, 'EUR', 'COMPLETE', '2025-08-01T00:00:00.000Z', 'will')`,
-  ).run();
-  old.prepare(
-    "INSERT INTO session_courts (session_id, court_number, start_minutes, slot_count) VALUES ('s1', 1, 1080, 1)",
-  ).run();
-  old.prepare(
-    `INSERT INTO matches (id, session_id, slot_index, court_number, team_a1, team_a2, team_b1, team_b2)
-     VALUES ('m1', 's1', 0, 1, 'p1', 'p2', 'p3', 'p4')`,
-  ).run();
-  old.close();
+  await old.exec(`
+    INSERT INTO sessions (id, name, date, start_minutes, slot_count, cost_per_court_slot, currency, status, created_at, created_by)
+    VALUES ('s1', 'Legacy Mixin', '2025-08-29', 1080, 1, 600, 'EUR', 'COMPLETE', '2025-08-01T00:00:00.000Z', 'will');
+    INSERT INTO session_courts (session_id, court_number, start_minutes, slot_count) VALUES ('s1', 1, 1080, 1);
+    INSERT INTO matches (id, session_id, slot_index, court_number, team_a1, team_a2, team_b1, team_b2)
+    VALUES ('m1', 's1', 0, 1, 'p1', 'p2', 'p3', 'p4');
+  `);
+  await old.close();
 
-  process.env.DATABASE_PATH = dbPath;
+  delete process.env.DATABASE_URL;
+  delete process.env.POSTGRES_URL;
+  process.env.DATABASE_PATH = dataDir;
+  // The connection is cached per process, so make sure this file opens its own.
+  (globalThis as { sotoPadelDb?: unknown }).sotoPadelDb = undefined;
   db = await import("@/db");
-});
+  // PGlite compiles and initialises WebAssembly on the first query, which takes
+  // seconds on a cold cache. Doing it here rather than letting it land inside
+  // the first test keeps that cost out of the per-test timeout.
+  await db.listPlayers();
+}, 60_000);
 
 afterAll(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
 describe("upgrading a database from before score recording", () => {
-  it("keeps the existing players, session and match", () => {
-    expect(db.listPlayers(true).map((p) => p.name)).toContain("Legacy Ana");
-    expect(db.getSession("s1")?.name).toBe("Legacy Mixin");
-    expect(db.listMatches("s1")).toHaveLength(1);
-    expect(db.listMatches("s1")[0]?.teamA).toEqual(["p1", "p2"]);
+  it("keeps the existing players, session and match", async () => {
+    expect((await db.listPlayers(true)).map((p) => p.name)).toContain("Legacy Ana");
+    expect((await db.getSession("s1"))?.name).toBe("Legacy Mixin");
+    const matches = await db.listMatches("s1");
+    expect(matches).toHaveLength(1);
+    expect(matches[0]?.teamA).toEqual(["p1", "p2"]);
   });
 
-  it("adds the new columns with empty values rather than failing to read", () => {
-    expect(db.listMatches("s1")[0]?.scoreA).toBeNull();
-    expect(db.listMatches("s1")[0]?.scoreB).toBeNull();
-    expect(db.getSession("s1")?.ratingsAppliedAt).toBeNull();
+  it("adds the new columns with empty values rather than failing to read", async () => {
+    const match = (await db.listMatches("s1"))[0];
+    expect(match?.scoreA).toBeNull();
+    expect(match?.scoreB).toBeNull();
+    expect((await db.getSession("s1"))?.ratingsAppliedAt).toBeNull();
   });
 
-  it("can record a score against the migrated match", () => {
-    db.setMatchScore("s1", 0, 1, 6, 2);
-    expect(db.listMatches("s1")[0]).toMatchObject({ scoreA: 6, scoreB: 2 });
+  it("can record a score against the migrated match", async () => {
+    await db.setMatchScore("s1", 0, 1, 6, 2);
+    expect((await db.listMatches("s1"))[0]).toMatchObject({ scoreA: 6, scoreB: 2 });
   });
 
-  it("can apply rating changes on the migrated session", () => {
-    const matches = db.listMatches("s1");
+  it("can apply rating changes on the migrated session", async () => {
+    const matches = await db.listMatches("s1");
+    const players = await db.listPlayers(true);
     const changes = ratingChangesFromResults(
       matches.map((m) => ({
         teamA: m.teamA,
@@ -115,24 +121,26 @@ describe("upgrading a database from before score recording", () => {
         gamesA: m.scoreA ?? 0,
         gamesB: m.scoreB ?? 0,
       })),
-      new Map(db.listPlayers(true).map((p) => [p.id, p.rating])),
+      new Map(players.map((p) => [p.id, p.rating])),
     );
-    const result = db.applyRatingChanges("s1", changes, "will", "Legacy Mixin");
+    const result = await db.applyRatingChanges("s1", changes, "will", "Legacy Mixin");
     expect(result.alreadyApplied).toBe(false);
     expect(result.applied).toBeGreaterThan(0);
-    expect(db.getSession("s1")?.ratingsAppliedAt).not.toBeNull();
+    expect((await db.getSession("s1"))?.ratingsAppliedAt).not.toBeNull();
   });
 
-  it("is safe to open twice — the migration does not re-run destructively", async () => {
-    const before = db.listMatches("s1")[0];
-    const reopened = new Database(dbPath);
-    const columns = reopened
-      .prepare("PRAGMA table_info(matches)")
-      .all()
-      .map((row) => (row as { name: string }).name);
-    reopened.close();
+  it("backfills the ordering column so old rating history still reads newest-first", async () => {
+    // The migrated rows predate `seq`; new ones must still sort above them.
+    await db.setPlayerRating("p1", 3.75, "will", "after the upgrade");
+    const history = await db.listRatingHistory("p1");
+    expect(history[0]?.reason).toBe("after the upgrade");
+  });
 
-    expect(columns.filter((c) => c === "score_a")).toHaveLength(1);
-    expect(db.listMatches("s1")[0]).toEqual(before);
+  it("is safe to apply again — the migration does not repeat destructively", async () => {
+    const before = await db.listMatches("s1");
+    // Re-running the same additive statements must be a no-op.
+    const client = await db.getDb();
+    await client.exec("ALTER TABLE matches ADD COLUMN IF NOT EXISTS score_a INTEGER");
+    expect(await db.listMatches("s1")).toEqual(before);
   });
 });
