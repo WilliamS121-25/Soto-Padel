@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import * as db from "@/db";
 import { formatRating, ratingBand, ratingOptions } from "@/domain/rating";
-import { setRatingAction, updatePlayerAction } from "../../actions";
+import { deletePlayerAction, setRatingAction, updatePlayerAction } from "../../actions";
 
 export default async function PlayerPage({
   params,
@@ -24,6 +24,9 @@ export default async function PlayerPage({
 
   const partners = history.partnersOf(id);
   const opponents = history.opponentsOf(id);
+  // The same condition the delete itself enforces: a player who appears in a
+  // saved draw cannot be removed without invalidating that draw.
+  const hasPlayed = history.gamesPlayed(id) > 0;
 
   return (
     <>
@@ -176,6 +179,37 @@ export default async function PlayerPage({
             </table>
           )}
         </div>
+      </div>
+
+      <div className="card">
+        <h2>Remove player</h2>
+        {hasPlayed ? (
+          <>
+            <p className="small muted">
+              {player.name} appears in the line-ups of {history.gamesPlayed(id)} recorded{" "}
+              {history.gamesPlayed(id) === 1 ? "game" : "games"}, so they cannot be deleted —
+              removing them would invalidate those draws and the payment schedules that follow from
+              them.
+            </p>
+            <p className="small muted">
+              Untick <strong>Active</strong> under Details instead. That keeps the record and leaves
+              them out of future mixins.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="small muted">
+              Deletes {player.name} for good, along with their rating history and any signup they
+              hold for a mixin that has not been drawn yet. Not reversible.
+            </p>
+            <form action={deletePlayerAction} className="actions">
+              <input type="hidden" name="playerId" value={player.id} />
+              <button type="submit" className="danger">
+                Delete {player.name}
+              </button>
+            </form>
+          </>
+        )}
       </div>
     </>
   );

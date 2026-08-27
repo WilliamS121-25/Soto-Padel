@@ -4,7 +4,7 @@ import * as db from "@/db";
 import { blocksPlayedFromMatches, buildPaymentSchedule, formatMoney } from "@/domain/payments";
 import { formatRating, ratingOptions } from "@/domain/rating";
 import { MAX_GAMES_PER_BLOCK } from "@/domain/types";
-import { detectScheduleDrift, reconstructRounds } from "@/domain/scheduler";
+import { detectScheduleDrift, reconstructRounds, summariseRepeats } from "@/domain/scheduler";
 import {
   hasScore,
   materialRatingChanges,
@@ -63,6 +63,7 @@ export default async function SessionPage({
   const matches = await db.listMatches(id);
   const rounds = reconstructRounds(session, allocation.confirmed, matches);
   const drift = detectScheduleDrift(allocation.confirmed, matches);
+  const repeats = summariseRepeats(matches);
 
   const scoredMatches = matches.filter((match) =>
     hasScore({ gamesA: match.scoreA ?? 0, gamesB: match.scoreB ?? 0 }),
@@ -403,8 +404,10 @@ export default async function SessionPage({
       <div className="card">
         <h2>Line-ups</h2>
         <p className="small muted">
-          Players are matched on rating while avoiding partners and opponents they have already had,
-          across every mixin recorded here. Re-draw gives a different valid set.
+          Nobody partners or faces the same player twice in a mixin, the two teams in a four add up
+          to a similar total, and levels are deliberately mixed so lower-rated players get games
+          with and against stronger ones. Earlier mixins are taken into account too. Re-draw gives a
+          different valid set.
         </p>
 
         {drift.isStale && (
@@ -427,6 +430,39 @@ export default async function SessionPage({
             </div>
           </div>
         )}
+
+        {matches.length > 0 &&
+          (repeats.partnerships.length > 0 || repeats.opponents.length > 0 ? (
+            <div className="note warn small">
+              <strong>Some repeats could not be avoided.</strong> There are not enough different
+              players for the number of games, so the draw took the smallest compromise it could.
+              {repeats.partnerships.length > 0 && (
+                <div>
+                  Partnered twice:{" "}
+                  {repeats.partnerships
+                    .map((r) => `${nameOf(r.playerIds[0])} & ${nameOf(r.playerIds[1])}`)
+                    .join(", ")}
+                  .
+                </div>
+              )}
+              {repeats.opponents.length > 0 && (
+                <div>
+                  Faced each other more than once:{" "}
+                  {repeats.opponents
+                    .map(
+                      (r) =>
+                        `${nameOf(r.playerIds[0])} v ${nameOf(r.playerIds[1])} (${r.times}x)`,
+                    )
+                    .join(", ")}
+                  .
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="small muted">
+              ✓ No repeated partnerships or opponents in this draw.
+            </p>
+          ))}
 
         <div className="actions" style={{ marginBottom: 14 }}>
           <form action={generateScheduleAction}>

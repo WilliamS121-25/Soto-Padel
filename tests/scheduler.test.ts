@@ -1,10 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { HistoryIndex, pairKey } from "@/domain/history";
-import { detectScheduleDrift, generateSchedule, reconstructRounds } from "@/domain/scheduler";
+import {
+  detectScheduleDrift,
+  generateSchedule,
+  reconstructRounds,
+  summariseRepeats,
+} from "@/domain/scheduler";
 import { parseTime } from "@/domain/time";
 import { court, ladder, makeSession, makeSignup, makePlayer, ratingMap } from "./fixtures";
 
-function partnershipCounts(matches: { teamA: readonly [string, string]; teamB: readonly [string, string] }[]) {
+type MatchLike = { teamA: readonly [string, string]; teamB: readonly [string, string] };
+
+function partnershipCounts(matches: MatchLike[]) {
   const counts = new Map<string, number>();
   for (const match of matches) {
     for (const team of [match.teamA, match.teamB]) {
@@ -14,6 +21,30 @@ function partnershipCounts(matches: { teamA: readonly [string, string]; teamB: r
   }
   return counts;
 }
+
+function opponentCounts(matches: MatchLike[]) {
+  const counts = new Map<string, number>();
+  for (const match of matches) {
+    for (const a of match.teamA) {
+      for (const b of match.teamB) {
+        const key = pairKey(a, b);
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+    }
+  }
+  return counts;
+}
+
+const teamGap = (match: MatchLike, ratings: ReadonlyMap<string, number>) => {
+  const avg = (team: readonly [string, string]) =>
+    ((ratings.get(team[0]) ?? 0) + (ratings.get(team[1]) ?? 0)) / 2;
+  return Math.abs(avg(match.teamA) - avg(match.teamB));
+};
+
+const fourSpread = (match: MatchLike, ratings: ReadonlyMap<string, number>) => {
+  const values = [...match.teamA, ...match.teamB].map((id) => ratings.get(id) ?? 0);
+  return Math.max(...values) - Math.min(...values);
+};
 
 describe("a full mixin: 5 courts, 2 hours, 20 players", () => {
   const players = ladder(20, 2.5, 5.5);
@@ -42,22 +73,46 @@ describe("a full mixin: 5 courts, 2 hours, 20 players", () => {
     expect(repeats).toEqual([]);
   });
 
-  it("keeps each four close in level", () => {
+  it("never puts two players against each other twice", () => {
+    const repeats = [...opponentCounts(result.matches).values()].filter((n) => n > 1);
+    expect(repeats).toEqual([]);
+    expect(result.repeats.partnerships).toEqual([]);
+    expect(result.repeats.opponents).toEqual([]);
+  });
+
+  it("mixes levels rather than banding players by rating", () => {
+    // The point of a mixin: a 2.5 should get games with and against a 5.5, not
+    // spend the evening on the same court as the four people nearest them. The
+    // ladder spans 3.0 rating points, so a four spanning over a third of it is
+    // a genuinely mixed four rather than a band.
     const ratings = ratingMap(players);
-    for (const match of result.matches) {
-      const values = [...match.teamA, ...match.teamB].map((id) => ratings.get(id) ?? 0);
-      // The ladder spans 3.0 rating points; a four never spans most of it.
-      expect(Math.max(...values) - Math.min(...values)).toBeLessThan(2);
-    }
+    const spreads = result.matches.map((m) => fourSpread(m, ratings));
+    const mixed = spreads.filter((spread) => spread > 1).length;
+    expect(mixed).toBeGreaterThan(result.matches.length / 2);
+  });
+
+  it("gives the weakest player games with and against stronger ones", () => {
+    const ratings = ratingMap(players);
+    const weakest = [...players].sort((a, b) => a.rating - b.rating)[0]!;
+    const theirs = result.matches.filter((m) =>
+      [...m.teamA, ...m.teamB].includes(weakest.id),
+    );
+    expect(theirs.length).toBeGreaterThan(0);
+    const others = theirs.flatMap((m) =>
+      [...m.teamA, ...m.teamB].filter((id) => id !== weakest.id),
+    );
+    const strongest = Math.max(...others.map((id) => ratings.get(id) ?? 0));
+    expect(strongest - weakest.rating).toBeGreaterThan(1);
   });
 
   it("balances the two teams within each four", () => {
+    // Mixing levels is not licence to make the game one-sided: the two teams
+    // still have to add up to a similar total. The ladder spans 3.0 points, so
+    // these bounds keep every game close and the typical one very close.
     const ratings = ratingMap(players);
-    for (const match of result.matches) {
-      const avg = (team: readonly [string, string]) =>
-        ((ratings.get(team[0]) ?? 0) + (ratings.get(team[1]) ?? 0)) / 2;
-      expect(Math.abs(avg(match.teamA) - avg(match.teamB))).toBeLessThan(0.4);
-    }
+    const gaps = result.matches.map((m) => teamGap(m, ratings));
+    for (const gap of gaps) expect(gap).toBeLessThan(0.7);
+    expect(gaps.reduce((a, b) => a + b, 0) / gaps.length).toBeLessThan(0.3);
   });
 
   it("is reproducible, and a new seed gives a different draw", () => {
@@ -73,6 +128,102 @@ describe("a full mixin: 5 courts, 2 hours, 20 players", () => {
     expect(reseeded.matches).not.toEqual(result.matches);
     // ...but still a valid schedule.
     expect(reseeded.shortfalls).toEqual([]);
+  });
+});
+
+describe("when the rules cannot all be kept", () => {
+  /**
+   * Eight players over four rounds is the shape that makes the club's second
+   * rule arithmetically impossible: each player faces two opponents a round, so
+   * eight opponent slots against seven other people. Something has to repeat.
+   */
+  const players = ladder(8, 3.0, 5.0);
+  const session = makeSession({
+    slotCount: 4,
+    courts: [court(1, "18:00", 4), court(2, "18:00", 4)],
+  });
+  const signups = players.map((p, i) => makeSignup(p.id, 4, "18:00", i + 1));
+  const result = generateSchedule({ session, signups, ratings: ratingMap(players) });
+
+  it("still gives everyone their games", () => {
+    expect(result.matches).toHaveLength(8);
+    expect(result.shortfalls).toEqual([]);
+  });
+
+  it("keeps the partner rule, which is the one that can be kept", () => {
+    // 16 partner slots over 28 possible pairs: no repeat is necessary here, so
+    // there must not be one.
+    expect(result.repeats.partnerships).toEqual([]);
+  });
+
+  it("gives up opponents rather than partners, and says that it did", () => {
+    expect(result.repeats.opponents.length).toBeGreaterThan(0);
+    // 32 opponent slots over 28 pairs forces at least four repeats; a draw much
+    // worse than that floor means the search has stopped working.
+    const forced = result.repeats.opponents.reduce((n, r) => n + (r.times - 1), 0);
+    expect(forced).toBeGreaterThanOrEqual(4);
+    expect(forced).toBeLessThanOrEqual(8);
+  });
+
+  it("reports every repeat it accepted, with a count", () => {
+    const counts = opponentCounts(result.matches);
+    for (const pair of result.repeats.opponents) {
+      expect(counts.get(pairKey(pair.playerIds[0], pair.playerIds[1]))).toBe(pair.times);
+      expect(pair.times).toBeGreaterThan(1);
+    }
+  });
+});
+
+describe("summarising the repeats in a draw", () => {
+  const match = (a1: string, a2: string, b1: string, b2: string) => ({
+    slotIndex: 0,
+    courtNumber: 1,
+    teamA: [a1, a2] as const,
+    teamB: [b1, b2] as const,
+  });
+
+  it("finds nothing in a draw with none", () => {
+    expect(summariseRepeats([match("a", "b", "c", "d"), match("e", "f", "g", "h")])).toEqual({
+      partnerships: [],
+      opponents: [],
+    });
+  });
+
+  it("counts a rematch even when the pairings are rearranged", () => {
+    // a-b-c-d twice over is four fresh partnerships but the same four people,
+    // so every one of them faces someone they have faced already.
+    const summary = summariseRepeats([match("a", "b", "c", "d"), match("a", "c", "b", "d")]);
+    expect(summary.partnerships).toEqual([]);
+    expect(summary.opponents.map((r) => r.playerIds.join("|")).sort()).toEqual(["a|d", "b|c"]);
+  });
+
+  it("counts a partnership that happens twice", () => {
+    const summary = summariseRepeats([match("a", "b", "c", "d"), match("a", "b", "e", "f")]);
+    expect(summary.partnerships).toEqual([{ playerIds: ["a", "b"], times: 2 }]);
+  });
+
+  it("counts opponents who meet again, whichever side they are on", () => {
+    const summary = summariseRepeats([match("a", "b", "c", "d"), match("c", "e", "a", "f")]);
+    const met = summary.opponents.map((r) => r.playerIds.join("|"));
+    expect(met).toEqual(["a|c"]);
+    expect(summary.partnerships).toEqual([]);
+  });
+
+  it("puts the worst offenders first", () => {
+    const summary = summariseRepeats([
+      match("a", "b", "c", "d"),
+      match("a", "b", "e", "f"),
+      match("a", "b", "g", "h"),
+      match("c", "e", "g", "i"),
+      match("c", "e", "g", "j"),
+    ]);
+    expect(summary.partnerships[0]).toEqual({ playerIds: ["a", "b"], times: 3 });
+  });
+
+  it("reads a saved draw as happily as a generated one", () => {
+    // Takes plain matches, so the session page can report on what is in the
+    // database rather than having to regenerate to find out.
+    expect(summariseRepeats([]).opponents).toEqual([]);
   });
 });
 

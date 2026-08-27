@@ -71,20 +71,33 @@ the space, and the person skipped keeps their place for the next opening.
 ## How the draw works
 
 For each half-hour the app works out who is present and still owes games,
-prioritises whoever is most at risk of not getting their full quota, groups them
-by rating, then picks teams. It weighs four things against each other:
+prioritises whoever is most at risk of not getting their full quota, then picks
+teams. Four rules, in this order of priority:
 
-- how lopsided the two teams would be — weighted heaviest, because a one-sided
-  game is the worst outcome for everyone on court
-- how wide a spread of levels ends up in one four
-- whether these two have partnered before
-- whether these two have played against each other before
+1. **Nobody partners the same player twice in a mixin.**
+2. **Nobody faces the same player twice in a mixin.**
+3. **The two teams in a four add up to a similar total**, so no game is
+   one-sided.
+4. **Levels are deliberately mixed**, so a 3.0 gets games with and against a
+   5.0 rather than spending the evening on the same court as the four people
+   nearest them in rating.
 
-Repeat partners and opponents are counted across **every mixin recorded in the
-app**, not just tonight, so the variety builds up over a season. The defaults were
-chosen by measuring real draws across mixins of 12–28 players on 3–5 courts; on a
-normal night they produce no repeat partnerships at all. They are in
-`DEFAULT_WEIGHTS` in `src/domain/scheduler.ts` if you want to trade the balance
+Rules 1 and 2 come first because they are what people notice. Rule 3 is what
+stops rule 4 producing a walkover: a four can span the whole club, as long as
+the two pairs in it are evenly matched.
+
+**Sometimes rules 1 and 2 cannot both hold, and that is arithmetic rather than a
+bug.** Eight players over four rounds means each person faces eight opponents
+drawn from seven other people, so somebody must be faced twice. Where that
+happens the draw takes an opponent repeat before a partner repeat, and the
+line-ups panel names exactly which pairs met again — no repeat is ever passed off
+silently. On a normal night with a dozen or more players there are none at all.
+
+Earlier mixins count too, as a milder preference: with several equally good
+draws available the app prefers the one that pairs you with someone you have not
+played with in weeks. The weights behind all of this were chosen by measuring
+draws across seven mixin shapes from 8 to 28 players; they are in
+`DEFAULT_WEIGHTS` in `src/domain/scheduler.ts` if you want to trade them
 differently.
 
 ## Ratings
@@ -123,6 +136,18 @@ If your club uses a different scale, `RATING_SCALE_PRESETS` in
 `src/domain/types.ts` has Playtomic-style 0.0–7.0 and a 1–10 ladder. How fast
 ratings move is `DEFAULT_RATING_UPDATE_OPTIONS` in
 `src/domain/rating-updates.ts`.
+
+### Removing a player
+
+Each player's page has a **Delete** button. It removes them for good, along with
+their rating history and any signup they hold for a mixin that has not been
+drawn yet — the notice afterwards says how many mixins that was.
+
+A player who appears in a **saved draw** cannot be deleted, and the page says so
+instead of offering the button. Removing them would invalidate those line-ups,
+the payment schedule that follows from them and any score recorded against them.
+Untick **Active** instead: the record stays and they are left out of future
+mixins. Deleting is really for the duplicate a WhatsApp import created.
 
 ## Payment
 

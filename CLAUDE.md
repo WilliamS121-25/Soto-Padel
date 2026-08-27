@@ -73,7 +73,7 @@ in a page or an action**.
 | `timeline.ts` | The 30-minute grid, per-court windows, capacity |
 | `rating.ts` | Scale validation, snapping, bands |
 | `signups.ts` | Place allocation, reserve queue, promotion on withdrawal |
-| `scheduler.ts` | Draw generation, round reconstruction, stale-draw detection |
+| `scheduler.ts` | Draw generation and its rules, round reconstruction, repeat and stale-draw reporting |
 | `history.ts` | Partner and opponent counts across sessions |
 | `rating-updates.ts` | Turning recorded scores into rating changes |
 | `payments.ts` | Per-head charging, money formatting and parsing |
@@ -82,7 +82,7 @@ in a page or an action**.
 
 ## Ideas the code is built on
 
-Get these four and the rest follows.
+Get these and the rest follows.
 
 **1. Capacity is player-blocks, not people.** Every court seats four players for
 every half-hour it is booked. Five courts for two hours is 5 × 4 × 4 = 80
@@ -102,12 +102,21 @@ deliberate: add a court and the reserves are promoted with no extra code, and th
 lists can never drift out of step with capacity. Do not add a code path that
 writes `CONFIRMED`/`RESERVE` as though it were the source of truth.
 
-**4. A saved draw goes stale.** Signups keep moving after the line-ups are drawn.
+**4. The draw's rules are ordered, and two of them can be impossible.** No
+repeat partner in a mixin comes first, then no repeat opponent, then even teams,
+then mixed levels. The first two are weights three orders of magnitude above the
+rest rather than a hard filter, because they cannot always both hold — eight
+players over four rounds need eight distinct opponents from a pool of seven. Where
+a repeat is forced the ordering makes the draw give up an opponent before a
+partner, and `summariseRepeats` reports what it accepted so the session page can
+say so. Do not "fix" a wide level spread inside a four: rule four wants it.
+
+**5. A saved draw goes stale.** Signups keep moving after the line-ups are drawn.
 `detectScheduleDrift` compares a saved draw against the current confirmed list,
 and the session page refuses to let that pass silently — the payment split is
 derived from the draw, so a stale draw means the wrong people are being charged.
 
-**5. Ratings derived from results are applied once, deliberately.** Scores are
+**6. Ratings derived from results are applied once, deliberately.** Scores are
 recorded per match as games won; `ratingChangesFromResults` turns them into
 per-player deltas, and `applyRatingChanges` writes them exactly once per session
 (guarded by `sessions.ratings_applied_at`). Two consequences to respect:
@@ -174,11 +183,18 @@ typical evening — it is what stops a well-meaning tweak making the whole featu
 inert, which is exactly what an early `k` of 0.08 did.
 
 **The scheduler's weights were tuned by measurement, not taste.** They were swept
-across five mixin shapes (12–28 players, 3–5 courts) comparing repeat
-partnerships, worst level spread and worst team gap. If you change
-`DEFAULT_WEIGHTS`, re-measure across several shapes rather than one — a single
-scenario sits inside the hill-climb's run-to-run noise, and tuning on it fits
-noise rather than quality.
+across seven mixin shapes (8–28 players, 2–5 courts) comparing repeat
+partnerships, repeat opponents, mean and worst team gap, and level spread. If you
+change `DEFAULT_WEIGHTS`, re-measure across several shapes rather than one — a
+single scenario sits inside the hill-climb's run-to-run noise, and tuning on it
+fits noise rather than quality. The numbers the current defaults were chosen
+against are in the `DEFAULT_WEIGHTS` comment.
+
+Do not assert an upper bound on the level spread within a four: mixing levels is
+now a requirement, not a defect. Team **balance** is the property to bound, and
+`8p/2c/4b` is the shape that proves the repeat rules are weights rather than a
+filter — assert there that partnerships stay clean and that the accepted
+opponent repeats are reported.
 
 ## Things worth knowing before changing something
 
@@ -227,6 +243,12 @@ noise rather than quality.
   record of what those sessions were priced at. Migrated sessions read back at
   zero and the organiser retypes the price; `tests/db-migration.test.ts` covers
   both that and the fact that inserts still work over the top of the old column.
+- `matches` references `players` **without** a cascade, unlike `signups` and
+  `rating_changes`. That is what makes `deletePlayer` refusable: a player in a
+  saved draw cannot be removed, because doing so would invalidate the line-ups,
+  the payment schedule derived from them and any recorded score. `deletePlayer`
+  checks and returns `{ deleted: false, playedIn }` rather than letting the
+  foreign key throw, so the page can explain and point at Active instead.
 - `signups.note` is stored and accepted by `addSignup`, but no form supplies it
   yet. It is a spare field, not dead code to delete on sight.
 
@@ -256,7 +278,7 @@ Flagged so they are not mistaken for requirements:
 ## Maintaining this file
 
 Update it in the same commit as the change that invalidates it: a new command, a
-new top-level directory, a new domain module, or a change to one of the four
+new top-level directory, a new domain module, or a change to one of the core
 ideas above. Keep it about what is not obvious from reading the code.
 
 <!-- BEGIN:nextjs-agent-rules -->

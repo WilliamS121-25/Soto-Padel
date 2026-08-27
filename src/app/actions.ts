@@ -122,6 +122,40 @@ export async function updatePlayerAction(form: FormData): Promise<void> {
   backTo(`/players/${playerId}`, { notice: "Player updated." });
 }
 
+export async function deletePlayerAction(form: FormData): Promise<void> {
+  const playerId = str(form, "playerId");
+  if (!playerId) backTo("/players", { error: "Unknown player." });
+
+  const player = await db.getPlayer(playerId);
+  if (!player) backTo("/players", { error: "Unknown player." });
+
+  const outcome = await db.deletePlayer(playerId);
+  if (!outcome.deleted) {
+    const named = outcome.playedIn
+      .slice(0, 3)
+      .map((s) => `${s.name} (${s.date})`)
+      .join(", ");
+    const more = outcome.playedIn.length > 3 ? ` and ${outcome.playedIn.length - 3} more` : "";
+    backTo(`/players/${playerId}`, {
+      error:
+        `${player.name} appears in the line-ups for ${named}${more}, so deleting them would ` +
+        "invalidate those draws and their payment schedules. Untick Active instead to keep the " +
+        "record and leave them out of future mixins.",
+    });
+  }
+
+  revalidatePath("/players");
+  revalidatePath("/");
+  const removed = outcome.removedFromSessions;
+  backTo("/players", {
+    notice:
+      removed > 0
+        ? `Deleted ${player.name}, along with their signup${removed === 1 ? "" : "s"} for ` +
+          `${removed} mixin${removed === 1 ? "" : "s"} and their rating history.`
+        : `Deleted ${player.name} and their rating history.`,
+  });
+}
+
 /* ----------------------------------------------------------------- sessions */
 
 export async function createSessionAction(form: FormData): Promise<void> {
