@@ -77,8 +77,14 @@ export interface Session {
   /** Advertised length of the mixin, in 30-minute blocks. */
   slotCount: number;
   courts: CourtBooking[];
-  /** Court hire cost per court per 30-minute block, in minor units (cents). */
-  costPerCourtSlot: number;
+  /**
+   * What each player pays for the whole mixin, in minor units (cents).
+   *
+   * A flat fee: someone who plays two games pays the same as someone who plays
+   * six. The club is paid per court, but the organiser announces one price per
+   * head, and that is the number they want to type in.
+   */
+  costPerPlayer: number;
   currency: string;
   status: SessionStatus;
   createdAt: string;

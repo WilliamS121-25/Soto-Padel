@@ -143,8 +143,8 @@ export function paymentMessage(input: PaymentMessageInput): string {
     `\u{1F4B3} *Payment — ${session.name}*`,
     `\u{1F4C5} ${formatDateLong(session.date)}`,
     "",
-    `Court hire: ${money(schedule.totalCourtCost, schedule.currency)} for ${schedule.totalCourtBlocks} court-blocks of 30min`,
-    `Split across ${schedule.totalBlocksPlayed} games played`,
+    `${money(schedule.costPerPlayer, schedule.currency)} per person`,
+    `${schedule.payingPlayers} ${schedule.payingPlayers === 1 ? "player" : "players"} playing`,
   ];
 
   for (const method of PAYMENT_METHODS) {

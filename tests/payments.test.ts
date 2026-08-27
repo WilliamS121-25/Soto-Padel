@@ -25,24 +25,25 @@ describe("money formatting", () => {
 });
 
 describe("payment schedule", () => {
-  // 2 courts x 4 blocks at 6.00 per court-block = 48.00 of court hire.
+  // The price is per head for the whole mixin, so the courts booked and the
+  // games played do not enter into what anybody owes.
   const session = makeSession({
     courts: [court(1, "18:00", 4), court(2, "18:00", 4)],
-    costPerCourtSlot: 600,
+    costPerPlayer: 1000,
   });
 
-  it("splits the court cost by games played", () => {
+  it("charges every player the same flat price", () => {
     const signups = ["p1", "p2", "p3", "p4"].map((id, i) => makeSignup(id, 4, "18:00", i + 1));
     const blocks = new Map(signups.map((s) => [s.playerId, 4]));
     const schedule = buildPaymentSchedule(session, signups, blocks);
 
-    expect(schedule.totalCourtCost).toBe(4800);
-    expect(schedule.totalBlocksPlayed).toBe(16);
-    for (const line of schedule.lines) expect(line.amount).toBe(1200);
-    expect(schedule.totalCollected).toBe(4800);
+    expect(schedule.costPerPlayer).toBe(1000);
+    expect(schedule.payingPlayers).toBe(4);
+    for (const line of schedule.lines) expect(line.amount).toBe(1000);
+    expect(schedule.totalCollected).toBe(4000);
   });
 
-  it("charges someone who played half as much half as much", () => {
+  it("charges someone who played half as many games the same", () => {
     const signups = [
       makeSignup("p1", 4, "18:00", 1),
       makeSignup("p2", 2, "18:00", 2),
@@ -53,21 +54,60 @@ describe("payment schedule", () => {
     ]);
     const schedule = buildPaymentSchedule(session, signups, blocks);
     const byPlayer = new Map(schedule.lines.map((l) => [l.playerId, l.amount]));
-    expect(byPlayer.get("p1")).toBe(3200);
-    expect(byPlayer.get("p2")).toBe(1600);
-    expect(schedule.totalCollected).toBe(4800);
+    expect(byPlayer.get("p1")).toBe(1000);
+    expect(byPlayer.get("p2")).toBe(1000);
+    expect(schedule.totalCollected).toBe(2000);
   });
 
-  it("never loses or invents a cent when the split does not divide", () => {
-    // 10.00 across three players is 3.333... each.
-    const oddSession = makeSession({ courts: [court(1, "18:00", 2)], costPerCourtSlot: 500 });
-    const signups = ["p1", "p2", "p3"].map((id, i) => makeSignup(id, 1, "18:00", i + 1));
-    const blocks = new Map(signups.map((s) => [s.playerId, 1]));
-    const schedule = buildPaymentSchedule(oddSession, signups, blocks);
+  it("still reports the games played, since that is what people query", () => {
+    const signups = [makeSignup("p1", 4, "18:00", 1), makeSignup("p2", 2, "18:00", 2)];
+    const schedule = buildPaymentSchedule(
+      session,
+      signups,
+      new Map([
+        ["p1", 4],
+        ["p2", 2],
+      ]),
+    );
+    expect(schedule.lines.map((l) => l.blocksPlayed)).toEqual([4, 2]);
+    expect(schedule.totalBlocksPlayed).toBe(6);
+  });
 
-    expect(schedule.totalCourtCost).toBe(1000);
-    expect(schedule.lines.map((l) => l.amount)).toEqual([334, 333, 333]);
-    expect(schedule.totalCollected).toBe(1000);
+  it("adds up exactly, whatever the price and however many are playing", () => {
+    for (const price of [0, 1, 333, 999, 1050, 123_45]) {
+      for (const count of [1, 3, 7, 12, 23]) {
+        const priced = makeSession({
+          courts: [court(1, "18:00", 4)],
+          costPerPlayer: price,
+        });
+        const signups = Array.from({ length: count }, (_, i) =>
+          makeSignup(`p${i}`, 2, "18:00", i + 1),
+        );
+        const blocks = new Map(signups.map((sign) => [sign.playerId, 2]));
+        const schedule = buildPaymentSchedule(priced, signups, blocks);
+        // No division, so no rounding remainder to lose: the total is the price
+        // times the heads, and every line is identical.
+        expect(schedule.totalCollected).toBe(price * count);
+        expect(new Set(schedule.lines.map((l) => l.amount))).toEqual(new Set([price]));
+      }
+    }
+  });
+
+  it("charges nothing when no price has been set", () => {
+    const free = makeSession({ courts: [court(1, "18:00", 2)], costPerPlayer: 0 });
+    const signups = ["p1", "p2"].map((id, i) => makeSignup(id, 1, "18:00", i + 1));
+    const schedule = buildPaymentSchedule(free, signups, new Map(signups.map((x) => [x.playerId, 1])));
+    expect(schedule.lines.map((l) => l.amount)).toEqual([0, 0]);
+    expect(schedule.totalCollected).toBe(0);
+  });
+
+  it("keeps the lines in signup order", () => {
+    const signups = ["third", "first", "second"].map((id, i) =>
+      makeSignup(id, 4, "18:00", i + 1),
+    );
+    const blocks = new Map(signups.map((x) => [x.playerId, 4]));
+    const schedule = buildPaymentSchedule(session, signups, blocks);
+    expect(schedule.lines.map((l) => l.playerId)).toEqual(["third", "first", "second"]);
   });
 
   it("groups by payment method and flags who has not chosen", () => {
@@ -93,7 +133,8 @@ describe("payment schedule", () => {
     ];
     const schedule = buildPaymentSchedule(session, signups, new Map([["played", 2]]));
     expect(schedule.lines.map((l) => l.playerId)).toEqual(["played"]);
-    expect(schedule.lines[0]?.amount).toBe(4800);
+    expect(schedule.lines[0]?.amount).toBe(1000);
+    expect(schedule.payingPlayers).toBe(1);
   });
 
   it("ignores reserves who never got a place", () => {

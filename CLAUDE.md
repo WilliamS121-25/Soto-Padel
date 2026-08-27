@@ -76,7 +76,7 @@ in a page or an action**.
 | `scheduler.ts` | Draw generation, round reconstruction, stale-draw detection |
 | `history.ts` | Partner and opponent counts across sessions |
 | `rating-updates.ts` | Turning recorded scores into rating changes |
-| `payments.ts` | Cost split, money formatting and parsing |
+| `payments.ts` | Per-head charging, money formatting and parsing |
 | `whatsapp.ts` | The four copy-paste message builders |
 | `parse-signups.ts` | Reading pasted WhatsApp text |
 
@@ -123,9 +123,9 @@ per-player deltas, and `applyRatingChanges` writes them exactly once per session
 ## Conventions
 
 - **Money is integer minor units (cents).** Never a float. Parse with
-  `parseMoney`, render with `formatMoney`. Any split must add up to the total
-  exactly; `buildPaymentSchedule` hands the rounding remainder to the largest
-  shares.
+  `parseMoney`, render with `formatMoney`. The payment schedule is a flat price
+  per head, so it divides nothing and has no rounding remainder to lose; if a
+  proportional split ever comes back, it must add up to the total exactly.
 - **Times are minutes from midnight**, integers. Dates are `YYYY-MM-DD` strings
   in the club's local calendar and are never timezone-converted. `formatDateLong`
   uses a fixed name table on purpose, so output does not shift with the host
@@ -220,6 +220,13 @@ noise rather than quality.
   `describeDatabaseError()`. Both are pure and tested; neither may print a
   connection string with credentials in it, and `errorDetail` exists because
   `String(thrown)` renders a plain object as `[object Object]`.
+- A database created before pricing became per-head still carries
+  `sessions.cost_per_court_slot`, unused and `NOT NULL DEFAULT 0`. It is left
+  alone deliberately: a court rate cannot be converted into a per-head price
+  (the head count was never recorded), so dropping it would destroy the only
+  record of what those sessions were priced at. Migrated sessions read back at
+  zero and the organiser retypes the price; `tests/db-migration.test.ts` covers
+  both that and the fact that inserts still work over the top of the old column.
 - `signups.note` is stored and accepted by `addSignup`, but no form supplies it
   yet. It is a spare field, not dead code to delete on sight.
 
@@ -230,8 +237,11 @@ Flagged so they are not mistaken for requirements:
 - The rating scale defaults to classic 1.0–7.0 in 0.25 steps. "Classic padel
   rating system" was the request; the scale is configurable via
   `RATING_SCALE_PRESETS` in case the club means something else.
-- Cost is modelled as a price per court per 30 minutes, split by games played.
-  Per-player pricing or peak/off-peak rates would need a change.
+- Cost is one flat price per person for the whole mixin, set per session. It
+  was a per-court-per-30-min rate split by games played until the organiser
+  asked for per-head pricing; the club is still charged per court, so a mixin
+  that fills badly collects less than it costs and nothing in the app notices.
+  Charging by games played, or peak/off-peak rates, would need a change.
 - There is no authentication: anyone with the URL can act as any name, and the
   admin name is a label, not a credential. Fine for a link shared between a few
   organisers, not fine if this ever holds anything sensitive.

@@ -126,12 +126,12 @@ export default async function SessionPage({
             <div className="small muted">waiting</div>
           </div>
           <div>
-            <div className="stat-label">Court hire</div>
+            <div className="stat-label">Per person</div>
             <div className="stat-value">
               {symbol}
-              {formatMoney(payments.totalCourtCost)}
+              {formatMoney(session.costPerPlayer)}
             </div>
-            <div className="small muted">{capacity.totalCourtBlocks} court-blocks</div>
+            <div className="small muted">{capacity.totalCourtBlocks} court-blocks booked</div>
           </div>
         </div>
 
@@ -594,7 +594,7 @@ export default async function SessionPage({
         <h2>Payment</h2>
         {payments.lines.length === 0 ? (
           <p className="empty">
-            Generate the line-ups first — the split follows the games each person actually played.
+            Generate the line-ups first — only the players who end up on court are charged.
           </p>
         ) : (
           <>
@@ -604,10 +604,17 @@ export default async function SessionPage({
                 out.
               </div>
             )}
+            {payments.costPerPlayer === 0 ? (
+              <div className="note warn small">
+                No cost per person has been set for this mixin, so everybody owes nothing. Set it in
+                Mixin setup below.
+              </div>
+            ) : null}
             <p className="small muted">
               {symbol}
-              {formatMoney(payments.totalCourtCost)} of court hire, split across{" "}
-              {payments.totalBlocksPlayed} games played. Set each person&apos;s payment method in the
+              {formatMoney(payments.costPerPlayer)} each, from the {payments.payingPlayers}{" "}
+              {payments.payingPlayers === 1 ? "player who is" : "players who are"} on court. Games
+              played do not change what someone owes. Set each person&apos;s payment method in the
               signups table above.
             </p>
             <div className="table-scroll">
@@ -780,12 +787,12 @@ export default async function SessionPage({
 
             <div className="row" style={{ marginTop: 14 }}>
               <div className="field">
-                <label htmlFor="costPerCourtSlot">Court cost per 30 min</label>
+                <label htmlFor="costPerPlayer">Cost per person</label>
                 <input
-                  id="costPerCourtSlot"
-                  name="costPerCourtSlot"
+                  id="costPerPlayer"
+                  name="costPerPlayer"
                   inputMode="decimal"
-                  defaultValue={formatMoney(session.costPerCourtSlot)}
+                  defaultValue={formatMoney(session.costPerPlayer)}
                 />
               </div>
               <div className="field">
