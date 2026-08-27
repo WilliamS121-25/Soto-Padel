@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   date                 TEXT    NOT NULL,
   start_minutes        INTEGER NOT NULL,
   slot_count           INTEGER NOT NULL,
-  cost_per_court_slot  INTEGER NOT NULL DEFAULT 0,
+  cost_per_player      INTEGER NOT NULL DEFAULT 0,
   currency             TEXT    NOT NULL DEFAULT 'EUR',
   status               TEXT    NOT NULL DEFAULT 'OPEN',
   created_at           TEXT    NOT NULL,
@@ -117,4 +117,10 @@ export const ADDED_COLUMNS: { table: string; column: string; type: string }[] = 
   { table: "matches", column: "score_b", type: "INTEGER" },
   { table: "sessions", column: "ratings_applied_at", type: "TEXT" },
   { table: "rating_changes", column: "seq", type: "BIGSERIAL" },
+  // Replaced cost_per_court_slot, which a database created before the price
+  // became per-head still carries. It is left in place rather than dropped:
+  // the two are not convertible (a court rate divided by a head count nobody
+  // recorded), so dropping it would destroy the only record of what the old
+  // sessions were priced at.
+  { table: "sessions", column: "cost_per_player", type: "INTEGER NOT NULL DEFAULT 0" },
 ];

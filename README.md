@@ -126,12 +126,13 @@ ratings move is `DEFAULT_RATING_UPDATE_OPTIONS` in
 
 ## Payment
 
-The club charges for the courts it booked whether or not every seat was filled,
-so the total is fixed and split in proportion to the games each person actually
-played. Amounts are held as whole cents and the rounding remainder goes to the
-largest shares, so the lines always add up to the total exactly.
+Set **the cost per person** in the mixin setup, and everyone who ends up on
+court owes exactly that — someone who played two games pays the same as someone
+who played six. Each line still shows the games played, because that is the
+first thing anyone checks when a figure looks wrong.
 
-Set the court cost per court per 30 minutes in the mixin setup.
+Somebody confirmed who ended up in no match at all is not charged. Amounts are
+held as whole cents, never as a float.
 
 ## Development
 

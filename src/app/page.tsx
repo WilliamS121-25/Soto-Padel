@@ -128,8 +128,8 @@ export default async function DashboardPage({
 
           <div className="row" style={{ marginTop: 14 }}>
             <div className="field">
-              <label htmlFor="costPerCourtSlot">Court cost per 30 min</label>
-              <input id="costPerCourtSlot" name="costPerCourtSlot" placeholder="6.00" inputMode="decimal" />
+              <label htmlFor="costPerPlayer">Cost per person</label>
+              <input id="costPerPlayer" name="costPerPlayer" placeholder="10.00" inputMode="decimal" />
             </div>
             <div className="field">
               <label htmlFor="currency">Currency</label>

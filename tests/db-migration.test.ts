@@ -136,6 +136,50 @@ describe("upgrading a database from before score recording", () => {
     expect(history[0]?.reason).toBe("after the upgrade");
   });
 
+  /**
+   * The per-head price replaced a per-court-per-30-min rate. The two are not
+   * convertible, so an old session comes through unpriced and the organiser
+   * retypes it — but the old column is still there, still NOT NULL, and every
+   * insert has to keep working over the top of it.
+   */
+  describe("the move from a court rate to a price per head", () => {
+    it("gains the new column, unpriced rather than wrongly priced", async () => {
+      expect((await db.getSession("s1"))?.costPerPlayer).toBe(0);
+    });
+
+    it("keeps the old court rate rather than destroying it", async () => {
+      const client = await db.getDb();
+      const { rows } = await client.query<{ cost_per_court_slot: number }>(
+        "SELECT cost_per_court_slot FROM sessions WHERE id = 's1'",
+      );
+      expect(rows[0]?.cost_per_court_slot).toBe(600);
+    });
+
+    it("takes a price for the migrated session", async () => {
+      await db.updateSession("s1", { costPerPlayer: 1250 });
+      expect((await db.getSession("s1"))?.costPerPlayer).toBe(1250);
+    });
+
+    it("can still create a session, though nothing supplies the old column", async () => {
+      // It is NOT NULL on an upgraded database and the insert no longer names
+      // it, so this only works because of its default. Exactly the kind of
+      // thing that passes on a fresh database and fails on a real one.
+      const created = await db.createSession(
+        {
+          name: "After the upgrade",
+          date: "2025-09-05",
+          startMinutes: 1080,
+          slotCount: 2,
+          courts: [{ courtNumber: 1, startMinutes: 1080, slotCount: 2 }],
+          costPerPlayer: 1000,
+          currency: "EUR",
+        },
+        "will",
+      );
+      expect((await db.getSession(created.id))?.costPerPlayer).toBe(1000);
+    });
+  });
+
   it("is safe to apply again — the migration does not repeat destructively", async () => {
     const before = await db.listMatches("s1");
     // Re-running the same additive statements must be a no-op.

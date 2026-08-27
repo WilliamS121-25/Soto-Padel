@@ -214,7 +214,7 @@ interface SessionRow {
   date: string;
   start_minutes: number;
   slot_count: number;
-  cost_per_court_slot: number;
+  cost_per_player: number;
   currency: string;
   status: string;
   created_at: string;
@@ -250,7 +250,7 @@ async function toSession(row: SessionRow): Promise<Session> {
     startMinutes: row.start_minutes,
     slotCount: row.slot_count,
     courts: await courtsFor(row.id),
-    costPerCourtSlot: row.cost_per_court_slot,
+    costPerPlayer: row.cost_per_player,
     currency: row.currency,
     status: row.status as SessionStatus,
     createdAt: row.created_at,
@@ -281,7 +281,7 @@ export async function createSession(
     startMinutes: number;
     slotCount: number;
     courts: CourtBooking[];
-    costPerCourtSlot: number;
+    costPerPlayer: number;
     currency?: string;
   },
   admin: string,
@@ -292,7 +292,7 @@ export async function createSession(
   await db.transaction(async (tx) => {
     await tx.query(
       `INSERT INTO sessions
-         (id, name, date, start_minutes, slot_count, cost_per_court_slot, currency, status, created_at, created_by)
+         (id, name, date, start_minutes, slot_count, cost_per_player, currency, status, created_at, created_by)
        VALUES ($1, $2, $3, $4, $5, $6, $7, 'OPEN', $8, $9)`,
       [
         id,
@@ -300,7 +300,7 @@ export async function createSession(
         input.date,
         input.startMinutes,
         input.slotCount,
-        input.costPerCourtSlot,
+        input.costPerPlayer,
         input.currency ?? "EUR",
         nowIso(),
         admin,
@@ -333,7 +333,7 @@ export async function updateSession(
     startMinutes?: number;
     slotCount?: number;
     courts?: CourtBooking[];
-    costPerCourtSlot?: number;
+    costPerPlayer?: number;
     currency?: string;
     status?: SessionStatus;
   },
@@ -345,13 +345,13 @@ export async function updateSession(
   await db.transaction(async (tx) => {
     await tx.query(
       `UPDATE sessions SET name = $1, date = $2, start_minutes = $3, slot_count = $4,
-         cost_per_court_slot = $5, currency = $6, status = $7 WHERE id = $8`,
+         cost_per_player = $5, currency = $6, status = $7 WHERE id = $8`,
       [
         patch.name?.trim() ?? existing.name,
         patch.date ?? existing.date,
         patch.startMinutes ?? existing.startMinutes,
         patch.slotCount ?? existing.slotCount,
-        patch.costPerCourtSlot ?? existing.costPerCourtSlot,
+        patch.costPerPlayer ?? existing.costPerPlayer,
         patch.currency ?? existing.currency,
         patch.status ?? existing.status,
         id,

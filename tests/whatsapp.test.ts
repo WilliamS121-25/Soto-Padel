@@ -19,7 +19,7 @@ const session = makeSession({
   date: "2025-08-29",
   slotCount: 4,
   courts: [court(1, "18:00", 4), court(3, "19:00", 3)],
-  costPerCourtSlot: 600,
+  costPerPlayer: 1000,
 });
 
 describe("signup message", () => {
@@ -130,10 +130,14 @@ describe("payment message", () => {
   });
 
   it("shows amounts in euros with a subtotal per method", () => {
-    // 7 court-blocks x 6.00 = 42.00, split four ways.
-    expect(text).toContain("€42.00");
-    expect(text).toContain("€10.50");
+    // Four players at the flat 10.00 a head.
+    expect(text).toContain("€10.00 per person");
+    expect(text).toContain("4 players playing");
     expect(text).toContain("Subtotal");
+  });
+
+  it("still shows how many games each person played", () => {
+    expect(text).toContain("(4 x 30min)");
   });
 
   it("chases anyone who has not picked a method", () => {
@@ -141,8 +145,8 @@ describe("payment message", () => {
     expect(text).toContain("Reception, Revolut or Playtomic");
   });
 
-  it("ends with a total that matches the court cost", () => {
-    expect(text).toContain("*Total: €42.00*");
-    expect(schedule.totalCollected).toBe(schedule.totalCourtCost);
+  it("ends with the total to be collected", () => {
+    expect(text).toContain("*Total: €40.00*");
+    expect(schedule.totalCollected).toBe(schedule.costPerPlayer * schedule.payingPlayers);
   });
 });

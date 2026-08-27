@@ -1,4 +1,3 @@
-import { computeCapacity } from "./timeline";
 import {
   PAYMENT_METHODS,
   type PaymentMethod,
@@ -16,78 +15,50 @@ export interface PaymentLine {
 
 export interface PaymentSchedule {
   currency: string;
-  /** What the club charges for the courts, in minor units. */
-  totalCourtCost: number;
-  totalCourtBlocks: number;
+  /** The session's flat price per head, in minor units. */
+  costPerPlayer: number;
+  /** How many players are being charged. */
+  payingPlayers: number;
+  /** 30-minute blocks played across everyone. Context, not a divisor. */
   totalBlocksPlayed: number;
   lines: PaymentLine[];
   byMethod: Record<PaymentMethod, PaymentLine[]>;
   /** Players who have not told us how they are paying. */
   unassigned: PaymentLine[];
-  /** Sum of all lines — equal to `totalCourtCost` by construction. */
+  /** Sum of all lines — `costPerPlayer * payingPlayers` by construction. */
   totalCollected: number;
 }
 
 /**
- * Split the court hire cost across players in proportion to the number of
- * 30-minute blocks each actually played.
+ * Charge every player who took the court the mixin's flat per-head price.
  *
- * The club charges for the courts it booked whether or not every seat was
- * filled, so the total is fixed and the split is proportional. Amounts are
- * integer minor units throughout, and the rounding remainder is handed to the
- * largest fractional shares so the lines always add up to the total exactly —
- * never a cent over or under what has to be paid at reception.
+ * The club charges per court, but the organiser announces one price per person
+ * and that is what goes in the group, so the app works the same way: the number
+ * of games somebody played does not change what they owe. It is still reported
+ * on each line, because it is the first thing anyone checks when they think a
+ * figure looks wrong.
+ *
+ * Someone confirmed who ended up in no match at all is not charged — they did
+ * not play. That is the one thing games played still decides.
  */
 export function buildPaymentSchedule(
   session: Session,
   signups: Signup[],
   blocksPlayedByPlayer: ReadonlyMap<string, number>,
 ): PaymentSchedule {
-  const { totalCourtBlocks } = computeCapacity(session);
-  const totalCourtCost = totalCourtBlocks * session.costPerCourtSlot;
+  const costPerPlayer = session.costPerPlayer;
 
-  const participants = signups
+  // Left in signup order, which is the order the confirmed list is already
+  // shown in. With one price for everybody there is nothing to rank by.
+  const lines: PaymentLine[] = signups
     .filter((s) => s.status === "CONFIRMED")
     .map((s) => ({
       playerId: s.playerId,
       method: s.paymentMethod,
       blocksPlayed: blocksPlayedByPlayer.get(s.playerId) ?? 0,
     }))
-    .filter((p) => p.blocksPlayed > 0);
-
-  const totalBlocksPlayed = participants.reduce((sum, p) => sum + p.blocksPlayed, 0);
-
-  let lines: PaymentLine[];
-  if (totalBlocksPlayed === 0 || totalCourtCost === 0) {
-    lines = participants.map((p) => ({ ...p, amount: 0 }));
-  } else {
-    const exact = participants.map((p) => ({
-      ...p,
-      raw: (totalCourtCost * p.blocksPlayed) / totalBlocksPlayed,
-    }));
-    const floored = exact.map((p) => ({ ...p, amount: Math.floor(p.raw) }));
-    let remainder = totalCourtCost - floored.reduce((sum, p) => sum + p.amount, 0);
-
-    // Hand out the leftover cents to the biggest fractional parts first.
-    const order = [...floored].sort(
-      (a, b) => b.raw - Math.floor(b.raw) - (a.raw - Math.floor(a.raw)) ||
-        a.playerId.localeCompare(b.playerId),
-    );
-    for (const entry of order) {
-      if (remainder <= 0) break;
-      entry.amount += 1;
-      remainder -= 1;
-    }
-
-    lines = floored.map(({ playerId, blocksPlayed, amount, method }) => ({
-      playerId,
-      blocksPlayed,
-      amount,
-      method,
-    }));
-  }
-
-  lines.sort((a, b) => b.amount - a.amount || a.playerId.localeCompare(b.playerId));
+    .filter((p) => p.blocksPlayed > 0)
+    .map((p) => ({ ...p, amount: costPerPlayer }));
 
   const byMethod = Object.fromEntries(
     PAYMENT_METHODS.map((method) => [method, lines.filter((l) => l.method === method)]),
@@ -95,9 +66,9 @@ export function buildPaymentSchedule(
 
   return {
     currency: session.currency,
-    totalCourtCost,
-    totalCourtBlocks,
-    totalBlocksPlayed,
+    costPerPlayer,
+    payingPlayers: lines.length,
+    totalBlocksPlayed: lines.reduce((sum, l) => sum + l.blocksPlayed, 0),
     lines,
     byMethod,
     unassigned: lines.filter((l) => l.method === null),

@@ -142,18 +142,18 @@ export async function createSessionAction(form: FormData): Promise<void> {
   const courts = readCourts(form, startMinutes, slotCount);
   if (courts.length === 0) backTo("/", { error: "Select at least one court." });
 
-  let costPerCourtSlot = 0;
-  const rawCost = str(form, "costPerCourtSlot");
+  let costPerPlayer = 0;
+  const rawCost = str(form, "costPerPlayer");
   if (rawCost) {
     try {
-      costPerCourtSlot = parseMoney(rawCost);
+      costPerPlayer = parseMoney(rawCost);
     } catch {
-      backTo("/", { error: "Enter the court cost as a number, e.g. 6.00." });
+      backTo("/", { error: "Enter the cost per person as a number, e.g. 10.00." });
     }
   }
 
   const session = await db.createSession(
-    { name, date, startMinutes, slotCount, courts, costPerCourtSlot, currency: str(form, "currency") || "EUR" },
+    { name, date, startMinutes, slotCount, courts, costPerPlayer, currency: str(form, "currency") || "EUR" },
     admin,
   );
   revalidatePath("/");
@@ -181,13 +181,13 @@ export async function updateSessionAction(form: FormData): Promise<void> {
     backTo(`/sessions/${sessionId}`, { error: "Select at least one court." });
   }
 
-  let costPerCourtSlot = existing.costPerCourtSlot;
-  const rawCost = str(form, "costPerCourtSlot");
+  let costPerPlayer = existing.costPerPlayer;
+  const rawCost = str(form, "costPerPlayer");
   if (rawCost) {
     try {
-      costPerCourtSlot = parseMoney(rawCost);
+      costPerPlayer = parseMoney(rawCost);
     } catch {
-      backTo(`/sessions/${sessionId}`, { error: "Enter the court cost as a number." });
+      backTo(`/sessions/${sessionId}`, { error: "Enter the cost per person as a number." });
     }
   }
 
@@ -197,7 +197,7 @@ export async function updateSessionAction(form: FormData): Promise<void> {
     startMinutes,
     slotCount,
     courts,
-    costPerCourtSlot,
+    costPerPlayer,
     status: (str(form, "status") || existing.status) as SessionStatus,
   });
   revalidatePath("/");

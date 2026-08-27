@@ -13,7 +13,7 @@ export function makeSession(overrides: Partial<Session> = {}): Session {
     startMinutes: parseTime("18:00"),
     slotCount: 4,
     courts: [court(1, "18:00", 4), court(2, "18:00", 4)],
-    costPerCourtSlot: 600,
+    costPerPlayer: 1000,
     currency: "EUR",
     status: "OPEN",
     createdAt: "2025-08-01T00:00:00.000Z",
