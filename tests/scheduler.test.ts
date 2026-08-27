@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { HistoryIndex, pairKey } from "@/domain/history";
 import {
+  DEFAULT_WEIGHTS,
   detectScheduleDrift,
   generateSchedule,
   reconstructRounds,
@@ -224,6 +225,79 @@ describe("summarising the repeats in a draw", () => {
     // Takes plain matches, so the session page can report on what is in the
     // database rather than having to regenerate to find out.
     expect(summariseRepeats([]).opponents).toEqual([]);
+  });
+});
+
+describe("a player who only wants their own level", () => {
+  // A wide ladder, so a mixed four is the natural outcome and the flag has to
+  // work against it rather than getting the answer for free.
+  const players = ladder(16, 2.0, 6.0);
+  const session = makeSession({
+    slotCount: 4,
+    courts: [1, 2, 3, 4].map((n) => court(n, "18:00", 4)),
+  });
+  const signups = players.map((p, i) => makeSignup(p.id, 4, "18:00", i + 1));
+  const ratings = ratingMap(players);
+  const fussy = players[2]!;
+
+  const mixed = generateSchedule({ session, signups, ratings });
+  const respected = generateSchedule({
+    session,
+    signups,
+    ratings,
+    similarLevelOnly: new Set([fussy.id]),
+  });
+
+  const foursWith = (result: ReturnType<typeof generateSchedule>, playerId: string) =>
+    result.matches
+      .filter((m) => [...m.teamA, ...m.teamB].includes(playerId))
+      .map((m) => {
+        const values = [...m.teamA, ...m.teamB].map((id) => ratings.get(id) ?? 0);
+        return Math.max(...values) - Math.min(...values);
+      });
+
+  it("keeps their fours inside the band, where everyone else's are mixed", () => {
+    const before = foursWith(mixed, fussy.id);
+    const after = foursWith(respected, fussy.id);
+    expect(Math.max(...after)).toBeLessThan(Math.max(...before));
+
+    // The band is 1.0 rating point. The cost is a hinge, so the draw will step
+    // marginally outside it when that is what avoids a repeat — it must not
+    // wander, but it is allowed to pay a little.
+    const band = DEFAULT_WEIGHTS.similarLevelBand;
+    expect(Math.max(...after)).toBeLessThanOrEqual(band * 1.25);
+    const mean = after.reduce((a, b) => a + b, 0) / after.length;
+    expect(mean).toBeLessThanOrEqual(band);
+  });
+
+  it("still gives them the games they asked for", () => {
+    const scheduled = respected.allocations.find((a) => a.playerId === fussy.id);
+    expect(scheduled?.scheduled).toBe(4);
+    expect(respected.shortfalls).toEqual([]);
+  });
+
+  it("leaves everyone else mixed", () => {
+    const others = respected.matches.filter(
+      (m) => ![...m.teamA, ...m.teamB].includes(fussy.id),
+    );
+    const spreads = others.map((m) => {
+      const values = [...m.teamA, ...m.teamB].map((id) => ratings.get(id) ?? 0);
+      return Math.max(...values) - Math.min(...values);
+    });
+    expect(Math.max(...spreads)).toBeGreaterThan(1);
+  });
+
+  it("does not give up the no-repeat rules to do it", () => {
+    expect(respected.repeats.partnerships).toEqual([]);
+  });
+
+  it("copes when two of them are the only pair near each other", () => {
+    // Both ends of the ladder flagged: nobody near them, so a narrow four is
+    // impossible. It must still produce a draw rather than failing.
+    const both = new Set([players[0]!.id, players[15]!.id]);
+    const result = generateSchedule({ session, signups, ratings, similarLevelOnly: both });
+    expect(result.matches).toHaveLength(16);
+    expect(result.shortfalls).toEqual([]);
   });
 });
 

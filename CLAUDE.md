@@ -77,7 +77,7 @@ in a page or an action**.
 | `history.ts` | Partner and opponent counts across sessions |
 | `rating-updates.ts` | Turning recorded scores into rating changes |
 | `payments.ts` | Per-head charging, money formatting and parsing |
-| `whatsapp.ts` | The four copy-paste message builders |
+| `whatsapp.ts` | The five copy-paste message builders, and team totals |
 | `parse-signups.ts` | Reading pasted WhatsApp text |
 
 ## Ideas the code is built on
@@ -104,7 +104,9 @@ writes `CONFIRMED`/`RESERVE` as though it were the source of truth.
 
 **4. The draw's rules are ordered, and two of them can be impossible.** No
 repeat partner in a mixin comes first, then no repeat opponent, then even teams,
-then mixed levels. The first two are weights three orders of magnitude above the
+then mixed levels — except for a player with `similarLevelOnly`, whose fours are
+held to `similarLevelBand` by a hinge cost (nothing inside the band, steep
+outside it) that outranks the repeat rules. The first two are weights three orders of magnitude above the
 rest rather than a hard filter, because they cannot always both hold — eight
 players over four rounds need eight distinct opponents from a pool of seven. Where
 a repeat is forced the ordering makes the draw give up an opponent before a
@@ -131,6 +133,10 @@ per-player deltas, and `applyRatingChanges` writes them exactly once per session
 
 ## Conventions
 
+- **`similarLevelOnly` is a hinge, not a slope.** `strictRatingSpread` charges
+  only for spread *beyond* `similarLevelBand`, because the request is "keep me
+  near my level", not "make my four as narrow as possible". A linear cost traded
+  level against the repeat rules point-for-point and landed on neither.
 - **Money is integer minor units (cents).** Never a float. Parse with
   `parseMoney`, render with `formatMoney`. The payment schedule is a flat price
   per head, so it divides nothing and has no rounding remainder to lose; if a
@@ -249,6 +255,14 @@ opponent repeats are reported.
   the payment schedule derived from them and any recorded score. `deletePlayer`
   checks and returns `{ deleted: false, playedIn }` rather than letting the
   foreign key throw, so the page can explain and point at Active instead.
+- **`deleteSession(id, { revertRatings: true })` is the only place applying
+  results is undone**, and it is coherent only because the mixin those results
+  came from is going away. It reads `rating_changes.session_id`, which
+  `applyRatingChanges` stamps, and skips any player changed again since —
+  rewinding those would discard the later change. Do not generalise it into an
+  un-apply button; see idea 6.
+- `players.gender` is stored as free text and narrowed on read, so an unexpected
+  value from an old row reads as "not recorded" instead of breaking the page.
 - `signups.note` is stored and accepted by `addSignup`, but no form supplies it
   yet. It is a spare field, not dead code to delete on sight.
 
@@ -268,6 +282,11 @@ Flagged so they are not mistaken for requirements:
   admin name is a label, not a credential. Fine for a link shared between a few
   organisers, not fine if this ever holds anything sensitive.
 - Nothing tracks whether a payment was actually collected — only the schedule.
+- `players.gender` is recorded but unused: no rule reads it. It exists so a
+  gender-balanced or split mixin is a change to the draw rather than a migration.
+- The level colours are three, not the four `ratingBand` names: Elite shares the
+  advanced colour because the club named three. `ratingLevel` is the colour, and
+  it is deliberately coarser than the band label.
 - A 30-minute block is scored as games won per team, capped at
   `MAX_GAMES_PER_BLOCK`. Points, sets and tiebreaks are not modelled.
 - How fast ratings move (`DEFAULT_RATING_UPDATE_OPTIONS`) was calibrated against

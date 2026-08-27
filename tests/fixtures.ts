@@ -23,7 +23,12 @@ export function makeSession(overrides: Partial<Session> = {}): Session {
   };
 }
 
-export function makePlayer(id: string, rating: number, name = id): Player {
+export function makePlayer(
+  id: string,
+  rating: number,
+  name = id,
+  overrides: Partial<Player> = {},
+): Player {
   return {
     id,
     name,
@@ -31,7 +36,10 @@ export function makePlayer(id: string, rating: number, name = id): Player {
     rating,
     active: true,
     notes: null,
+    gender: null,
+    similarLevelOnly: false,
     createdAt: "2025-08-01T00:00:00.000Z",
+    ...overrides,
   };
 }
 

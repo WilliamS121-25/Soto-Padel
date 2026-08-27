@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import * as db from "@/db";
 import { blocksPlayedFromMatches, buildPaymentSchedule, formatMoney } from "@/domain/payments";
-import { formatRating, ratingOptions } from "@/domain/rating";
+import { RATING_LEVEL_LABELS, formatRating, ratingLevel, ratingOptions } from "@/domain/rating";
 import { MAX_GAMES_PER_BLOCK } from "@/domain/types";
 import { detectScheduleDrift, reconstructRounds, summariseRepeats } from "@/domain/scheduler";
 import {
@@ -20,6 +20,7 @@ import {
   paymentMessage,
   scheduleMessage,
   signupOpenMessage,
+  teamTotal,
 } from "@/domain/whatsapp";
 import {
   addSignupAction,
@@ -82,6 +83,31 @@ export default async function SessionPage({
   const blocksPlayed = blocksPlayedFromMatches(matches);
   const payments = buildPaymentSchedule(session, allocation.confirmed, blocksPlayed);
   const symbol = currencySymbol(session.currency);
+
+  const ratings = new Map(players.map((player) => [player.id, player.rating]));
+  /**
+   * A name, coloured by level, with a marker for anyone who asked to stay at
+   * their own level so the organiser can see why a four is narrow.
+   */
+  const playerChip = (playerId: string) => {
+    const rating = ratingOf(playerId);
+    return (
+      <span key={playerId} className={`level level-${ratingLevel(rating)}`}>
+        {nameOf(playerId)}
+        {byId.get(playerId)?.similarLevelOnly ? <span title="Own level only">*</span> : null}
+      </span>
+    );
+  };
+  const teamSide = (team: readonly [string, string]) => (
+    <>
+      {playerChip(team[0])}
+      <span className="amp"> &amp; </span>
+      {playerChip(team[1])}
+      <span className="team-total" title="Both ratings added together">
+        {formatRating(teamTotal(team, ratings))}
+      </span>
+    </>
+  );
 
   const signedUpIds = new Set(signups.map((s) => s.playerId));
   const availablePlayers = players.filter((p) => !signedUpIds.has(p.id));
@@ -431,6 +457,17 @@ export default async function SessionPage({
           </div>
         )}
 
+        <p className="small muted legend">
+          Levels:{" "}
+          {(["improver", "intermediate", "advanced"] as const).map((level) => (
+            <span key={level} className={`level level-${level}`}>
+              {RATING_LEVEL_LABELS[level]}
+            </span>
+          ))}
+          <span className="muted"> · a number after a pair is their two ratings added together</span>
+          <span className="muted"> · * marks someone who asked for their own level only</span>
+        </p>
+
         {matches.length > 0 &&
           (repeats.partnerships.length > 0 || repeats.opponents.length > 0 ? (
             <div className="note warn small">
@@ -507,9 +544,9 @@ export default async function SessionPage({
                 {round.matches.map((match) => (
                   <div key={`${match.slotIndex}-${match.courtNumber}`} className="match">
                     <span className="court">Court {match.courtNumber}</span>
-                    <span className="side">{match.teamA.map(nameOf).join(" & ")}</span>
+                    <span className="side">{teamSide(match.teamA)}</span>
                     <span className="vs">vs</span>
-                    <span className="side">{match.teamB.map(nameOf).join(" & ")}</span>
+                    <span className="side">{teamSide(match.teamB)}</span>
                     <form action={setScoreAction} className="scorebox">
                       <input type="hidden" name="sessionId" value={session.id} />
                       <input type="hidden" name="slotIndex" value={match.slotIndex} />
@@ -741,7 +778,7 @@ export default async function SessionPage({
               <strong>Line-ups</strong>
             </summary>
             {(() => {
-              const text = scheduleMessage({ session, rounds, playerName: nameOf });
+              const text = scheduleMessage({ session, rounds, playerName: nameOf, ratings });
               return (
                 <>
                   <pre className="message">{text}</pre>
@@ -852,11 +889,20 @@ export default async function SessionPage({
           <hr style={{ margin: "18px 0", border: 0, borderTop: "1px solid var(--border)" }} />
           <form action={deleteSessionAction}>
             <input type="hidden" name="sessionId" value={session.id} />
-            <button type="submit" className="danger">
-              Delete this mixin
-            </button>
+            <label className="check" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input type="checkbox" name="revertRatings" style={{ width: "auto" }} />
+              Also put player ratings back to what they were before this mixin
+            </label>
+            <div className="actions">
+              <button type="submit" className="danger">
+                Delete this mixin
+              </button>
+            </div>
             <p className="small muted">
-              Removes its signups and line-ups. Player ratings and other mixins are untouched.
+              Removes its signups and line-ups. Other mixins are untouched. Ratings stay as they are
+              unless you tick the box — useful for clearing up after a test run, since applying
+              results is otherwise a one-way step. A player whose rating has changed again since is
+              left alone, and the notice says so.
             </p>
           </form>
         </details>

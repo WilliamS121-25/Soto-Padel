@@ -180,11 +180,42 @@ describe("upgrading a database from before score recording", () => {
     });
   });
 
+  it("gains the player fields, unset rather than guessed", async () => {
+    const legacy = (await db.listPlayers(true)).find((p) => p.name === "Legacy Ana");
+    expect(legacy?.gender).toBeNull();
+    expect(legacy?.similarLevelOnly).toBe(false);
+
+    // And they are writable on a migrated row.
+    await db.updatePlayer(legacy!.id, { gender: "FEMALE", similarLevelOnly: true });
+    expect(await db.getPlayer(legacy!.id)).toMatchObject({
+      gender: "FEMALE",
+      similarLevelOnly: true,
+    });
+  });
+
   it("is safe to apply again — the migration does not repeat destructively", async () => {
     const before = await db.listMatches("s1");
     // Re-running the same additive statements must be a no-op.
     const client = await db.getDb();
     await client.exec("ALTER TABLE matches ADD COLUMN IF NOT EXISTS score_a INTEGER");
     expect(await db.listMatches("s1")).toEqual(before);
+  });
+
+  it("can unwind the ratings it applied, and skips the one changed by hand since", async () => {
+    // By this point the suite has applied this mixin's results to all four
+    // players and then edited p1 by hand. Deleting the mixin must put the three
+    // untouched players back and leave p1's later judgement standing.
+    const before = new Map(
+      (await db.listPlayers(true)).map((player) => [player.id, player.rating]),
+    );
+
+    const outcome = await db.deleteSession("s1", { revertRatings: true });
+
+    expect(outcome.revertedRatings.map((r) => r.playerId).sort()).toEqual(["p2", "p3", "p4"]);
+    expect(outcome.keptRatings.map((r) => r.playerId)).toEqual(["p1"]);
+    expect((await db.getPlayer("p1"))!.rating).toBe(before.get("p1"));
+    for (const id of ["p2", "p3", "p4"]) {
+      expect((await db.getPlayer(id))!.rating).not.toBe(before.get(id));
+    }
   });
 });

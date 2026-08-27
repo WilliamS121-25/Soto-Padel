@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import * as db from "@/db";
 import { formatRating, ratingBand, ratingOptions } from "@/domain/rating";
+import { GENDERS, GENDER_LABELS } from "@/domain/types";
 import { deletePlayerAction, setRatingAction, updatePlayerAction } from "../../actions";
 
 export default async function PlayerPage({
@@ -37,6 +38,8 @@ export default async function PlayerPage({
       <p className="lede">
         {formatRating(player.rating)} · {ratingBand(player.rating)} ·{" "}
         {history.gamesPlayed(id)} games played
+        {player.gender ? ` · ${GENDER_LABELS[player.gender]}` : ""}
+        {player.similarLevelOnly ? " · own level only" : ""}
         {player.active ? "" : " · inactive"}
       </p>
 
@@ -83,12 +86,32 @@ export default async function PlayerPage({
               <input id="phone" name="phone" defaultValue={player.phone ?? ""} inputMode="tel" />
             </div>
             <div className="field">
+              <label htmlFor="gender">Sex</label>
+              <select id="gender" name="gender" defaultValue={player.gender ?? ""}>
+                <option value="">Not recorded</option>
+                {GENDERS.map((value) => (
+                  <option key={value} value={value}>
+                    {GENDER_LABELS[value]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
               <label htmlFor="notes">Notes</label>
               <input id="notes" name="notes" defaultValue={player.notes ?? ""} />
             </div>
             <label className="check" style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <input type="checkbox" name="active" defaultChecked={player.active} style={{ width: "auto" }} />
               Active — include in mixins
+            </label>
+            <label className="check" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                type="checkbox"
+                name="similarLevelOnly"
+                defaultChecked={player.similarLevelOnly}
+                style={{ width: "auto" }}
+              />
+              Only games at their own level — the draw keeps this four inside a narrow band
             </label>
             <div className="actions">
               <button type="submit">Save details</button>

@@ -13,7 +13,14 @@ import {
 } from "@/domain/rating-updates";
 import { parseTime } from "@/domain/time";
 import { formatDateLong } from "@/domain/time";
-import { FACILITY_COURTS, type CourtBooking, type PaymentMethod, type SessionStatus } from "@/domain/types";
+import {
+  FACILITY_COURTS,
+  GENDERS,
+  type CourtBooking,
+  type Gender,
+  type PaymentMethod,
+  type SessionStatus,
+} from "@/domain/types";
 import { parseMoney } from "@/domain/payments";
 import { adminName, setAdminName } from "@/lib/admin";
 
@@ -26,6 +33,12 @@ function str(form: FormData, key: string): string {
 function int(form: FormData, key: string, fallback: number): number {
   const value = Number.parseInt(str(form, key), 10);
   return Number.isFinite(value) ? value : fallback;
+}
+
+/** Blank means "not recorded", which is a real answer and the default. */
+function readGender(form: FormData): Gender | null {
+  const value = str(form, "gender");
+  return GENDERS.includes(value as Gender) ? (value as Gender) : null;
 }
 
 /** Redirect back to a page carrying a message for the user to read. */
@@ -88,7 +101,14 @@ export async function createPlayerAction(form: FormData): Promise<void> {
   if (!Number.isFinite(rating)) backTo("/players", { error: "Pick a rating for the player." });
 
   await db.createPlayer(
-    { name, rating, phone: str(form, "phone") || null, notes: str(form, "notes") || null },
+    {
+      name,
+      rating,
+      phone: str(form, "phone") || null,
+      notes: str(form, "notes") || null,
+      gender: readGender(form),
+      similarLevelOnly: Boolean(form.get("similarLevelOnly")),
+    },
     admin,
   );
   revalidatePath("/players");
@@ -116,6 +136,8 @@ export async function updatePlayerAction(form: FormData): Promise<void> {
     phone: str(form, "phone") || null,
     notes: str(form, "notes") || null,
     active: Boolean(form.get("active")),
+    gender: readGender(form),
+    similarLevelOnly: Boolean(form.get("similarLevelOnly")),
   });
   revalidatePath("/players");
   revalidatePath(`/players/${playerId}`);
@@ -241,9 +263,37 @@ export async function updateSessionAction(form: FormData): Promise<void> {
 
 export async function deleteSessionAction(form: FormData): Promise<void> {
   const sessionId = str(form, "sessionId");
-  await db.deleteSession(sessionId);
+  const session = await db.getSession(sessionId);
+  if (!session) backTo("/", { error: "That mixin is already gone." });
+
+  // Reverting is opt-in, because for a real mixin the results happened and the
+  // ratings they produced are the record. For a test run it is the whole point.
+  const revertRatings = Boolean(form.get("revertRatings"));
+  const outcome = await db.deleteSession(sessionId, { revertRatings });
+
+  const parts = [`Deleted ${session.name}`];
+  if (outcome.signupsRemoved > 0 || outcome.matchesRemoved > 0) {
+    parts.push(
+      `with ${outcome.signupsRemoved} signup${outcome.signupsRemoved === 1 ? "" : "s"} and ` +
+        `${outcome.matchesRemoved} line-up${outcome.matchesRemoved === 1 ? "" : "s"}`,
+    );
+  }
+  if (revertRatings) {
+    parts.push(
+      outcome.revertedRatings.length > 0
+        ? `and put ${outcome.revertedRatings.length} rating${outcome.revertedRatings.length === 1 ? "" : "s"} back`
+        : "and there were no ratings from it to put back",
+    );
+  }
+  const kept =
+    outcome.keptRatings.length > 0
+      ? ` ${outcome.keptRatings.length} rating${outcome.keptRatings.length === 1 ? " was" : "s were"} left alone, ` +
+        "having been changed again since — rewinding would have thrown that change away."
+      : "";
+
   revalidatePath("/");
-  backTo("/", { notice: "Mixin deleted." });
+  revalidatePath("/players");
+  backTo("/", { notice: `${parts.join(" ")}.${kept}` });
 }
 
 /* ------------------------------------------------------------------ signups */
@@ -435,6 +485,7 @@ export async function generateScheduleAction(form: FormData): Promise<void> {
     session,
     signups: allocation.confirmed,
     ratings: new Map(players.map((p) => [p.id, p.rating])),
+    similarLevelOnly: new Set(players.filter((p) => p.similarLevelOnly).map((p) => p.id)),
     // The session's own previous draw must not count as history to avoid.
     history: await db.buildHistoryIndex(sessionId),
     seed: form.get("reroll") ? Date.now() % 100000 : undefined,

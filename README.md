@@ -80,7 +80,7 @@ teams. Four rules, in this order of priority:
    one-sided.
 4. **Levels are deliberately mixed**, so a 3.0 gets games with and against a
    5.0 rather than spending the evening on the same court as the four people
-   nearest them in rating.
+   nearest them in rating — unless they have asked otherwise (below).
 
 Rules 1 and 2 come first because they are what people notice. Rule 3 is what
 stops rule 4 producing a walkover: a four can span the whole club, as long as
@@ -92,6 +92,13 @@ drawn from seven other people, so somebody must be faced twice. Where that
 happens the draw takes an opponent repeat before a partner repeat, and the
 line-ups panel names exactly which pairs met again — no repeat is ever passed off
 silently. On a normal night with a dozen or more players there are none at all.
+
+**A player can opt out of the mixing.** Tick *only games at their own level* on
+their page and every four they are in is held to a band of one rating point,
+even where that costs a repeat somebody else would not have had. Their name
+carries a `*` in the line-ups so you can see why a court looks narrow. It is a
+weight rather than an absolute: if the people on court that half-hour do not
+allow a narrow four, they still get a game.
 
 Earlier mixins count too, as a milder preference: with several equally good
 draws available the app prefers the one that pairs you with someone you have not
@@ -137,6 +144,17 @@ If your club uses a different scale, `RATING_SCALE_PRESETS` in
 ratings move is `DEFAULT_RATING_UPDATE_OPTIONS` in
 `src/domain/rating-updates.ts`.
 
+### Reading the line-ups
+
+Each pair shows **their two ratings added together**, so the two numbers either
+side of *vs* are the plainest evidence a game is fair. The totals are in the
+copyable line-ups message too.
+
+Names are coloured by level — **green** improving, **blue** intermediate, **red**
+advanced (Elite shares the advanced colour). The colour is never the only signal:
+the rating and the band are written out on the players screen and on each
+player's page.
+
 ### Removing a player
 
 Each player's page has a **Delete** button. It removes them for good, along with
@@ -148,6 +166,32 @@ instead of offering the button. Removing them would invalidate those line-ups,
 the payment schedule that follows from them and any score recorded against them.
 Untick **Active** instead: the record stays and they are left out of future
 mixins. Deleting is really for the duplicate a WhatsApp import created.
+
+### What a player record holds
+
+Name, rating, optional phone and notes, **sex** (male, female, or not recorded)
+and the **own-level-only** flag. Sex is stored as a label — nothing in the draw
+reads it today, so it is there for the day the club wants a mixin split or
+balanced by it.
+
+### Sharing the list
+
+The players screen has a copyable block of everyone with their rating, strongest
+first, tagged with sex where recorded and with anyone who asked for their own
+level only. Paste it into the group: the club's ratings are not a secret, and
+somebody who thinks theirs is wrong can only say so if they can see it. There is
+a **names only** copy if you would rather not post the numbers.
+
+### Deleting a mixin
+
+Under a mixin's setup, **Delete this mixin** removes it with its signups and
+line-ups. Other mixins and player ratings are untouched.
+
+Ticking **also put player ratings back** additionally unwinds what that mixin
+did to everyone's rating — useful after a test run, since applying results is
+otherwise a one-way step. A player whose rating has been changed *again* since
+is left alone and the notice says so: rewinding them would throw that later
+change away.
 
 ## Payment
 

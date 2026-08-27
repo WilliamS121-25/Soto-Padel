@@ -16,6 +16,19 @@ export interface SchedulerWeights {
   repeatOpponent: number;
   /** Cost per rating point of spread within a group of four. */
   ratingSpread: number;
+  /**
+   * How wide a four containing someone who asked for their own level may be
+   * before it starts costing, in rating points.
+   */
+  similarLevelBand: number;
+  /**
+   * Cost per rating point *beyond* that band. A hinge rather than a slope,
+   * because the request is "keep me with people near my level", not "make my
+   * four as narrow as possible": inside the band there is nothing to pay, so
+   * the draw is free to spend its effort on the no-repeat rules, and outside it
+   * the cost climbs past those rules quickly.
+   */
+  strictRatingSpread: number;
   /** Cost per rating point of difference between the two teams. */
   teamImbalance: number;
   /** Extra cost per rating point squared, so a wide gap is resisted hard. */
@@ -57,6 +70,8 @@ export const DEFAULT_WEIGHTS: SchedulerWeights = {
   repeatPartner: 8,
   repeatOpponent: 2.5,
   ratingSpread: 2,
+  similarLevelBand: 1,
+  strictRatingSpread: 4000,
   teamImbalance: 40,
   teamImbalanceSquared: 600,
 };
@@ -68,6 +83,11 @@ export interface SchedulerInput {
   ratings: ReadonlyMap<string, number>;
   /** Cross-session history; defaults to empty. */
   history?: HistoryIndex;
+  /**
+   * Players who asked to be kept with their own level. A four containing any of
+   * them is held to a narrow rating band instead of being mixed.
+   */
+  similarLevelOnly?: ReadonlySet<string>;
   weights?: Partial<SchedulerWeights>;
   /** Change to shuffle tie-breaks and get a different valid schedule. */
   seed?: number;
@@ -133,10 +153,16 @@ function bestPairing(
   history: HistoryIndex,
   session: HistoryIndex,
   weights: SchedulerWeights,
+  similarLevelOnly: ReadonlySet<string> = new Set(),
 ): { cost: number; teamA: readonly [string, string]; teamB: readonly [string, string] } {
   const values = group.map((id) => ratingOf(ratings, id));
   const spread = Math.max(...values) - Math.min(...values);
-  const spreadCost = weights.ratingSpread * spread;
+  // One player asking for their own level is enough to hold the whole four to
+  // it: they cannot have a narrow game unless everyone on court is close.
+  const strict = group.some((id) => similarLevelOnly.has(id));
+  const spreadCost = strict
+    ? weights.strictRatingSpread * Math.max(0, spread - weights.similarLevelBand)
+    : weights.ratingSpread * spread;
 
   let best: {
     cost: number;
@@ -245,9 +271,11 @@ function refineGroups(
   history: HistoryIndex,
   session: HistoryIndex,
   weights: SchedulerWeights,
+  similarLevelOnly: ReadonlySet<string>,
   maxPasses = 8,
 ): void {
-  const costOf = (group: string[]) => bestPairing(group, ratings, history, session, weights).cost;
+  const costOf = (group: string[]) =>
+    bestPairing(group, ratings, history, session, weights, similarLevelOnly).cost;
   const costs = groups.map(costOf);
 
   for (let pass = 0; pass < maxPasses; pass += 1) {
@@ -307,6 +335,7 @@ export function generateSchedule(input: SchedulerInput): ScheduleResult {
    * playing with them again a month later is merely a mild preference.
    */
   const sessionSoFar = new HistoryIndex();
+  const similarLevelOnly = input.similarLevelOnly ?? new Set<string>();
   const rng = mulberry32(input.seed ?? 0x50d0);
   /**
    * With no seed the grouping follows rating order exactly, which gives the
@@ -405,7 +434,7 @@ export function generateSchedule(input: SchedulerInput): ScheduleResult {
       groups.push(byRating.slice(i, i + PLAYERS_PER_COURT));
     }
 
-    refineGroups(groups, ratings, history, sessionSoFar, weights);
+    refineGroups(groups, ratings, history, sessionSoFar, weights, similarLevelOnly);
 
     // Strongest four on the lowest court number, which is the usual convention.
     const ranked = groups
@@ -424,7 +453,14 @@ export function generateSchedule(input: SchedulerInput): ScheduleResult {
       const courtNumber = courtNumbers[g];
       if (!entry || courtNumber === undefined) continue;
 
-      const pairing = bestPairing(entry.group, ratings, history, sessionSoFar, weights);
+      const pairing = bestPairing(
+        entry.group,
+        ratings,
+        history,
+        sessionSoFar,
+        weights,
+        similarLevelOnly,
+      );
       totalCost += pairing.cost;
 
       const match: Match = {
