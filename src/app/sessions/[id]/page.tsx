@@ -4,6 +4,7 @@ import * as db from "@/db";
 import { blocksPlayedFromMatches, buildPaymentSchedule, formatMoney } from "@/domain/payments";
 import { RATING_LEVEL_LABELS, formatRating, ratingLevel, ratingOptions } from "@/domain/rating";
 import { MAX_GAMES_PER_BLOCK } from "@/domain/types";
+import { gamesScheduled } from "@/domain/lineup-edits";
 import { detectScheduleDrift, reconstructRounds, summariseRepeats } from "@/domain/scheduler";
 import {
   hasScore,
@@ -13,7 +14,7 @@ import {
 import { allocateSignups } from "@/domain/signups";
 import { formatDateLong, formatSlotCount, formatSlotRange, formatTime } from "@/domain/time";
 import { computeCapacity } from "@/domain/timeline";
-import { PAYMENT_METHODS, PAYMENT_METHOD_LABELS } from "@/domain/types";
+import { PAYMENT_METHODS, PAYMENT_METHOD_LABELS, type Signup } from "@/domain/types";
 import {
   availabilityMessage,
   currencySymbol,
@@ -32,6 +33,7 @@ import {
   removeSignupAction,
   restoreSignupAction,
   setScoreAction,
+  updateLineupAction,
   updateSessionAction,
   updateSignupAction,
   withdrawSignupAction,
@@ -108,6 +110,16 @@ export default async function SessionPage({
       </span>
     </>
   );
+
+  /**
+   * How the choices read in the seat pickers. The games count is the point: it
+   * is what stops the admin picking somebody who is already down for their
+   * full quota, rather than finding out when the save is refused.
+   */
+  const scheduledGames = gamesScheduled(matches);
+  const seatLabel = (signup: Signup) =>
+    `${nameOf(signup.playerId)} — ${formatRating(ratingOf(signup.playerId))} · ` +
+    `${scheduledGames.get(signup.playerId) ?? 0}/${signup.requestedSlots} games`;
 
   const signedUpIds = new Set(signups.map((s) => s.playerId));
   const availablePlayers = players.filter((p) => !signedUpIds.has(p.id));
@@ -471,8 +483,9 @@ export default async function SessionPage({
         {matches.length > 0 &&
           (repeats.partnerships.length > 0 || repeats.opponents.length > 0 ? (
             <div className="note warn small">
-              <strong>Some repeats could not be avoided.</strong> There are not enough different
-              players for the number of games, so the draw took the smallest compromise it could.
+              <strong>Some players meet more than once.</strong> Where the draw did this, it was
+              because there are not enough different players for the number of games and it took
+              the smallest compromise it could. A hand edit can create one too.
               {repeats.partnerships.length > 0 && (
                 <div>
                   Partnered twice:{" "}
@@ -577,8 +590,61 @@ export default async function SessionPage({
                   </div>
                 ))}
               </div>
+
             </div>
           ))
+        )}
+
+        {rounds.length > 0 && (
+          <details className="edit-lineup">
+            <summary>Change who plays, by hand</summary>
+            <p className="small muted">
+              The whole evening at once, on purpose: the changes worth making move somebody
+              relative to somebody else, and saving one block at a time would have to pass through
+              a state where a player is on two courts or over their games. The first two names on
+              a court are one team.
+            </p>
+            <form action={updateLineupAction}>
+              <input type="hidden" name="sessionId" value={session.id} />
+              {rounds
+                .filter((round) => round.matches.length > 0)
+                .map((round) => (
+                  <div key={`edit-${round.slotIndex}`} className="edit-round">
+                    <div className="small muted">{formatSlotRange(round.startMinutes)}</div>
+                    {round.matches.map((match) => (
+                      <div key={`edit-${match.slotIndex}-${match.courtNumber}`} className="seats">
+                        <span className="court">Court {match.courtNumber}</span>
+                        {[...match.teamA, ...match.teamB].map((playerId, seat) => (
+                          <select
+                            key={seat}
+                            name={`seat-${match.slotIndex}-${match.courtNumber}-${seat}`}
+                            defaultValue={playerId}
+                            aria-label={`${formatSlotRange(round.startMinutes)}, court ${
+                              match.courtNumber
+                            }, ${seat < 2 ? "first" : "second"} pair, player ${(seat % 2) + 1}`}
+                          >
+                            {allocation.confirmed.map((signup) => (
+                              <option key={signup.id} value={signup.playerId}>
+                                {seatLabel(signup)}
+                              </option>
+                            ))}
+                          </select>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              <p className="small muted">
+                Nothing is written unless the whole evening still holds: nobody on two courts at
+                the same time, nobody down for more games than they signed up for, and nobody in a
+                block that starts before they said they could get there. A court whose four changes
+                loses any score it had — different people played it.
+              </p>
+              <div className="actions">
+                <button type="submit">Save line-ups</button>
+              </div>
+            </form>
+          </details>
         )}
       </div>
 

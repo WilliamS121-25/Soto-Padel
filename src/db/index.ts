@@ -704,6 +704,38 @@ export async function replaceMatches(sessionId: string, matches: Match[]): Promi
   });
 }
 
+/**
+ * Rewrite the four on specific courts, leaving the rest of the draw alone.
+ *
+ * The counterpart to `replaceMatches` for a hand edit. Two differences matter:
+ * only the courts passed in are touched, so scores recorded elsewhere in the
+ * evening survive; and the score on a court whose four changed is cleared, for
+ * the same reason regenerating clears all of them — different people played it,
+ * so the old result is not theirs.
+ */
+export async function updateMatchLineups(sessionId: string, matches: Match[]): Promise<void> {
+  if (matches.length === 0) return;
+  const db = await getDb();
+  await db.transaction(async (tx) => {
+    for (const match of matches) {
+      await tx.query(
+        `UPDATE matches
+         SET team_a1 = $1, team_a2 = $2, team_b1 = $3, team_b2 = $4, score_a = NULL, score_b = NULL
+         WHERE session_id = $5 AND slot_index = $6 AND court_number = $7`,
+        [
+          match.teamA[0],
+          match.teamA[1],
+          match.teamB[0],
+          match.teamB[1],
+          sessionId,
+          match.slotIndex,
+          match.courtNumber,
+        ],
+      );
+    }
+  });
+}
+
 interface MatchRecordRow extends MatchRow {
   session_id: string;
   date: string;

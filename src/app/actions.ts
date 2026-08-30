@@ -5,6 +5,12 @@ import { redirect } from "next/navigation";
 import * as db from "@/db";
 import { parseSignupText } from "@/domain/parse-signups";
 import { normaliseRating } from "@/domain/rating";
+import {
+  checkLineups,
+  describeLineupProblem,
+  isCompleteFour,
+  lineupChanged,
+} from "@/domain/lineup-edits";
 import { generateSchedule } from "@/domain/scheduler";
 import {
   materialRatingChanges,
@@ -18,6 +24,7 @@ import {
   GENDERS,
   type CourtBooking,
   type Gender,
+  type Match,
   type PaymentMethod,
   type SessionStatus,
 } from "@/domain/types";
@@ -503,6 +510,88 @@ export async function generateScheduleAction(form: FormData): Promise<void> {
       : "";
   backTo(`/sessions/${sessionId}`, {
     notice: `Line-ups generated: ${result.matches.length} games.${shortfall}`,
+  });
+}
+
+/**
+ * Save line-ups the admin edited by hand.
+ *
+ * The form covers the **whole** draw, not one block, and that is the important
+ * decision. Every rearrangement worth making moves somebody relative to somebody
+ * else — swapping two players between courts in the same half-hour, or trading
+ * two people between blocks — and a block-at-a-time save would have to pass
+ * through a state with one of them double-booked or over their games, which the
+ * check below rightly refuses. One form, one save, one verdict.
+ *
+ * Nothing is written unless the whole evening holds. Only the courts whose four
+ * actually changed are written, so scores elsewhere survive.
+ */
+export async function updateLineupAction(form: FormData): Promise<void> {
+  const sessionId = str(form, "sessionId");
+  const session = await db.getSession(sessionId);
+  if (!session) backTo("/", { error: "That mixin no longer exists." });
+
+  const saved = await db.listMatches(sessionId);
+  if (saved.length === 0) {
+    backTo(`/sessions/${sessionId}`, { error: "There are no line-ups to change yet." });
+  }
+
+  const proposed: Match[] = [];
+  for (const match of saved) {
+    const prefix = `seat-${match.slotIndex}-${match.courtNumber}`;
+    const seats = [0, 1, 2, 3].map((seat) => str(form, `${prefix}-${seat}`));
+    if (!isCompleteFour(seats)) {
+      backTo(`/sessions/${sessionId}`, {
+        error: `Court ${match.courtNumber} at slot ${match.slotIndex + 1} needs all four places filled.`,
+      });
+    }
+    proposed.push({ ...match, teamA: [seats[0], seats[1]], teamB: [seats[2], seats[3]] });
+  }
+
+  const { allocateSignups } = await import("@/domain/signups");
+  const allocation = allocateSignups(session, await db.listSignups(sessionId));
+  const problems = checkLineups({ session, confirmed: allocation.confirmed, matches: proposed });
+
+  if (problems.length > 0) {
+    const players = await db.listPlayers(true);
+    const byId = new Map(players.map((player) => [player.id, player.name]));
+    const nameOf = (playerId: string) => byId.get(playerId) ?? "Someone";
+
+    // Only the first few: this travels back in the URL, and fixing the first
+    // usually clears the rest.
+    const shown = problems.slice(0, 3).map((problem) => describeLineupProblem(problem, nameOf));
+    const rest = problems.length - shown.length;
+    backTo(`/sessions/${sessionId}`, {
+      error: `Not saved. ${shown.join(" ")}${rest > 0 ? ` And ${rest} more.` : ""}`,
+    });
+  }
+
+  const before = new Map(
+    saved.map((match) => [`${match.slotIndex}-${match.courtNumber}`, match]),
+  );
+  const changed = proposed.filter((match) => {
+    const existing = before.get(`${match.slotIndex}-${match.courtNumber}`);
+    return existing ? lineupChanged(existing, match) : false;
+  });
+
+  if (changed.length === 0) {
+    backTo(`/sessions/${sessionId}`, { notice: "Nothing was changed." });
+  }
+
+  await db.updateMatchLineups(sessionId, changed);
+  revalidatePath(`/sessions/${sessionId}`);
+
+  const scoresCleared = changed.filter((match) => {
+    const existing = before.get(`${match.slotIndex}-${match.courtNumber}`);
+    return existing?.scoreA !== null && existing?.scoreA !== undefined;
+  }).length;
+
+  backTo(`/sessions/${sessionId}`, {
+    notice:
+      `Line-ups updated on ${changed.length} court${changed.length === 1 ? "" : "s"}.` +
+      (scoresCleared > 0
+        ? ` ${scoresCleared} score${scoresCleared === 1 ? " was" : "s were"} cleared — different players are on court now.`
+        : ""),
   });
 }
 

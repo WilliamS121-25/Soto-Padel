@@ -573,6 +573,72 @@ describe("matches and history", () => {
   });
 });
 
+describe("editing a block's line-ups by hand", () => {
+  it("rewrites only the courts given, and clears the score on those it changed", async () => {
+    const players = await Promise.all(
+      ["A", "B", "C", "D", "E", "F", "G", "H"].map((n) =>
+        db.createPlayer({ name: `Edit ${n}`, rating: 4 }, "will"),
+      ),
+    );
+    const id = players.map((p) => p.id) as string[];
+    const session = await db.createSession(
+      {
+        name: "Hand Edit",
+        date: "2025-10-04",
+        startMinutes: parseTime("18:00"),
+        slotCount: 1,
+        costPerPlayer: 1000,
+        courts: [
+          { courtNumber: 1, startMinutes: parseTime("18:00"), slotCount: 1 },
+          { courtNumber: 2, startMinutes: parseTime("18:00"), slotCount: 1 },
+        ],
+      },
+      "will",
+    );
+
+    await db.replaceMatches(session.id, [
+      { slotIndex: 0, courtNumber: 1, teamA: [id[0]!, id[1]!], teamB: [id[2]!, id[3]!] },
+      { slotIndex: 0, courtNumber: 2, teamA: [id[4]!, id[5]!], teamB: [id[6]!, id[7]!] },
+    ]);
+    await db.setMatchScore(session.id, 0, 1, 6, 3);
+    await db.setMatchScore(session.id, 0, 2, 5, 4);
+
+    // Swap one player between the two courts, writing only court 1.
+    await db.updateMatchLineups(session.id, [
+      { slotIndex: 0, courtNumber: 1, teamA: [id[0]!, id[4]!], teamB: [id[2]!, id[3]!] },
+    ]);
+
+    const after = await db.listMatches(session.id);
+    const first = after.find((m) => m.courtNumber === 1);
+    const second = after.find((m) => m.courtNumber === 2);
+
+    expect(first?.teamA).toEqual([id[0], id[4]]);
+    // Different players played that block, so the old result is not theirs.
+    expect(first?.scoreA).toBeNull();
+    expect(first?.scoreB).toBeNull();
+
+    // The untouched court keeps both its four and its score.
+    expect(second?.teamA).toEqual([id[4], id[5]]);
+    expect(second?.scoreA).toBe(5);
+    expect(second?.scoreB).toBe(4);
+  });
+
+  it("does nothing when handed no matches", async () => {
+    const session = await db.createSession(
+      {
+        name: "Hand Edit Empty",
+        date: "2025-10-05",
+        startMinutes: parseTime("18:00"),
+        slotCount: 1,
+        costPerPlayer: 1000,
+        courts: [{ courtNumber: 1, startMinutes: parseTime("18:00"), slotCount: 1 }],
+      },
+      "will",
+    );
+    await expect(db.updateMatchLineups(session.id, [])).resolves.toBeUndefined();
+  });
+});
+
 describe("scores and automatic rating changes", () => {
   async function makeScoredSession(name: string, ratingValue = 4) {
     const players = await Promise.all(

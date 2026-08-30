@@ -210,6 +210,20 @@ pre.message {
 
 .login-wrap { max-width: 380px; margin: 12vh auto; }
 
+/* Hand-editing a block's line-ups. Tucked behind a summary so the normal
+   reading view stays a list of games rather than a form. */
+.edit-lineup { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
+.edit-lineup > summary { cursor: pointer; font-weight: 600; }
+.edit-lineup > p { margin: 8px 0 0; }
+.edit-lineup form { margin-top: 12px; }
+.edit-lineup form p { margin: 10px 0 0; }
+.edit-lineup .actions { margin-top: 10px; }
+.edit-round { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px 8px; margin-bottom: 8px; }
+.edit-round > .small { margin-bottom: 2px; }
+.seats { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 4px 0; }
+.seats .court { font-size: 12px; font-weight: 650; color: var(--muted); min-width: 62px; }
+.seats select { width: auto; min-width: 150px; max-width: 100%; padding: 4px 6px; font-size: 13px; }
+
 .scorebox { display: flex; align-items: center; gap: 4px; margin-left: auto; }
 .scorebox input { width: 46px; padding: 4px 6px; text-align: center; font-variant-numeric: tabular-nums; }
 .scorebox .dash { color: var(--muted); font-size: 12px; }

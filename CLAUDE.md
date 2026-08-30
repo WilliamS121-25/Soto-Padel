@@ -74,6 +74,7 @@ in a page or an action**.
 | `rating.ts` | Scale validation, snapping, bands |
 | `signups.ts` | Place allocation, reserve queue, promotion on withdrawal |
 | `scheduler.ts` | Draw generation and its rules, round reconstruction, repeat and stale-draw reporting |
+| `lineup-edits.ts` | Checking a draw an admin edited by hand, and the pieces the edit form needs |
 | `history.ts` | Partner and opponent counts across sessions |
 | `rating-updates.ts` | Turning recorded scores into rating changes |
 | `payments.ts` | Per-head charging, money formatting and parsing |
@@ -118,7 +119,16 @@ say so. Do not "fix" a wide level spread inside a four: rule four wants it.
 and the session page refuses to let that pass silently — the payment split is
 derived from the draw, so a stale draw means the wrong people are being charged.
 
-**6. Ratings derived from results are applied once, deliberately.** Scores are
+**6. A hand edit is checked, the draw is not.** The line-ups can be edited a
+block at a time, and `checkLineups` is what makes that safe. The generator cannot
+produce a player on two courts at once or over their quota — it allocates from
+the same counters it decrements — but a typed-in change can, so every save is
+checked against the **whole** evening before anything is written. Note what is
+*not* checked: repeat partners and opponents. Those are weights in the draw
+(idea 4), not rules, and an admin who wants two people to play again is entitled
+to say so; the repeat panel reports the result either way.
+
+**7. Ratings derived from results are applied once, deliberately.** Scores are
 recorded per match as games won; `ratingChangesFromResults` turns them into
 per-player deltas, and `applyRatingChanges` writes them exactly once per session
 (guarded by `sessions.ratings_applied_at`). Two consequences to respect:
@@ -216,6 +226,18 @@ opponent repeats are reported.
 - Regenerating a draw clears its scores (`replaceMatches` writes no score
   columns). That is intended: a new draw puts different people on court, so an
   old result is void.
+- `updateMatchLineups` is the hand-edit counterpart and is deliberately narrower:
+  it rewrites only the courts passed to it, so scores elsewhere in the evening
+  survive, and clears the score on a court whose four changed for the same reason
+  regenerating clears all of them.
+- **The line-up editor is one form over the whole evening, deliberately.** Every
+  rearrangement worth making moves somebody relative to somebody else — two
+  players swapping courts in a block, or trading places between blocks — and
+  saving a block at a time would have to pass through a state with one of them
+  double-booked or over their games, which `checkLineups` rightly refuses. It was
+  built per-block first and that is exactly what went wrong: with a draw that
+  meets everyone's quota, no per-block save that changes who plays can ever be
+  legal. One form, one save, one verdict.
 - `session_courts` is keyed on `(session_id, court_number)`, so a court can hold
   one window per mixin. Two separate windows for the same court on the same night
   would need that key relaxed. `buildTimeline` already copes.
@@ -260,7 +282,7 @@ opponent repeats are reported.
   came from is going away. It reads `rating_changes.session_id`, which
   `applyRatingChanges` stamps, and skips any player changed again since —
   rewinding those would discard the later change. Do not generalise it into an
-  un-apply button; see idea 6.
+  un-apply button; see idea 7.
 - `players.gender` is stored as free text and narrowed on read, so an unexpected
   value from an old row reads as "not recorded" instead of breaking the page.
 - `signups.note` is stored and accepted by `addSignup`, but no form supplies it
