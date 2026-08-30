@@ -1,6 +1,9 @@
 import Link from "next/link";
 import * as db from "@/db";
 import { formatRating, ratingBand, ratingOptions } from "@/domain/rating";
+import { GENDERS, GENDER_LABELS } from "@/domain/types";
+import { playerListMessage } from "@/domain/whatsapp";
+import { CopyButton } from "../copy-button";
 import { createPlayerAction } from "../actions";
 
 export default async function PlayersPage({
@@ -35,6 +38,7 @@ export default async function PlayersPage({
                   <th>Name</th>
                   <th className="num">Rating</th>
                   <th>Level</th>
+                  <th>Sex</th>
                   <th className="num">Games played</th>
                   <th>Last played</th>
                   <th />
@@ -49,9 +53,17 @@ export default async function PlayersPage({
                     </td>
                     <td className="num">{formatRating(player.rating)}</td>
                     <td className="small muted">{ratingBand(player.rating)}</td>
+                    <td className="small muted">
+                      {player.gender ? GENDER_LABELS[player.gender] : "—"}
+                    </td>
                     <td className="num">{history.gamesPlayed(player.id)}</td>
                     <td className="small muted">{history.lastPlayedDate(player.id) ?? "—"}</td>
                     <td>
+                      {player.similarLevelOnly && (
+                        <span className="pill wait" title="Only wants games at their own level">
+                          own level
+                        </span>
+                      )}
                       {!player.active && <span className="pill out">inactive</span>}
                     </td>
                   </tr>
@@ -60,6 +72,22 @@ export default async function PlayersPage({
             </table>
           </div>
         )}
+      </div>
+
+      <div className="card">
+        <h2>Share the list</h2>
+        <p className="small muted">
+          Paste into the WhatsApp group so everyone can check their own rating. Someone who thinks
+          theirs is wrong can only say so if they can see it.
+        </p>
+        <pre className="message">{playerListMessage({ players })}</pre>
+        <div className="actions">
+          <CopyButton text={playerListMessage({ players })} />
+          <CopyButton
+            text={playerListMessage({ players, showRatings: false })}
+            label="Copy names only"
+          />
+        </div>
       </div>
 
       <div className="card">
@@ -84,11 +112,26 @@ export default async function PlayersPage({
               <label htmlFor="phone">Phone (optional)</label>
               <input id="phone" name="phone" inputMode="tel" />
             </div>
+            <div className="field">
+              <label htmlFor="gender">Sex (optional)</label>
+              <select id="gender" name="gender" defaultValue="">
+                <option value="">Not recorded</option>
+                {GENDERS.map((value) => (
+                  <option key={value} value={value}>
+                    {GENDER_LABELS[value]}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
           <div className="field">
             <label htmlFor="notes">Notes (optional)</label>
             <input id="notes" name="notes" placeholder="e.g. prefers the right side" />
           </div>
+          <label className="check" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input type="checkbox" name="similarLevelOnly" style={{ width: "auto" }} />
+            Only wants games at their own level — keeps them out of mixed-level fours
+          </label>
           <div className="actions">
             <button type="submit" className="primary">
               Add player

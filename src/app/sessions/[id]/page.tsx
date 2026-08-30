@@ -2,9 +2,10 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import * as db from "@/db";
 import { blocksPlayedFromMatches, buildPaymentSchedule, formatMoney } from "@/domain/payments";
-import { formatRating, ratingOptions } from "@/domain/rating";
+import { RATING_LEVEL_LABELS, formatRating, ratingLevel, ratingOptions } from "@/domain/rating";
 import { MAX_GAMES_PER_BLOCK } from "@/domain/types";
-import { detectScheduleDrift, reconstructRounds } from "@/domain/scheduler";
+import { gamesScheduled } from "@/domain/lineup-edits";
+import { detectScheduleDrift, reconstructRounds, summariseRepeats } from "@/domain/scheduler";
 import {
   hasScore,
   materialRatingChanges,
@@ -13,13 +14,14 @@ import {
 import { allocateSignups } from "@/domain/signups";
 import { formatDateLong, formatSlotCount, formatSlotRange, formatTime } from "@/domain/time";
 import { computeCapacity } from "@/domain/timeline";
-import { PAYMENT_METHODS, PAYMENT_METHOD_LABELS } from "@/domain/types";
+import { PAYMENT_METHODS, PAYMENT_METHOD_LABELS, type Signup } from "@/domain/types";
 import {
   availabilityMessage,
   currencySymbol,
   paymentMessage,
   scheduleMessage,
   signupOpenMessage,
+  teamTotal,
 } from "@/domain/whatsapp";
 import {
   addSignupAction,
@@ -31,6 +33,7 @@ import {
   removeSignupAction,
   restoreSignupAction,
   setScoreAction,
+  updateLineupAction,
   updateSessionAction,
   updateSignupAction,
   withdrawSignupAction,
@@ -63,6 +66,7 @@ export default async function SessionPage({
   const matches = await db.listMatches(id);
   const rounds = reconstructRounds(session, allocation.confirmed, matches);
   const drift = detectScheduleDrift(allocation.confirmed, matches);
+  const repeats = summariseRepeats(matches);
 
   const scoredMatches = matches.filter((match) =>
     hasScore({ gamesA: match.scoreA ?? 0, gamesB: match.scoreB ?? 0 }),
@@ -81,6 +85,41 @@ export default async function SessionPage({
   const blocksPlayed = blocksPlayedFromMatches(matches);
   const payments = buildPaymentSchedule(session, allocation.confirmed, blocksPlayed);
   const symbol = currencySymbol(session.currency);
+
+  const ratings = new Map(players.map((player) => [player.id, player.rating]));
+  /**
+   * A name, coloured by level, with a marker for anyone who asked to stay at
+   * their own level so the organiser can see why a four is narrow.
+   */
+  const playerChip = (playerId: string) => {
+    const rating = ratingOf(playerId);
+    return (
+      <span key={playerId} className={`level level-${ratingLevel(rating)}`}>
+        {nameOf(playerId)}
+        {byId.get(playerId)?.similarLevelOnly ? <span title="Own level only">*</span> : null}
+      </span>
+    );
+  };
+  const teamSide = (team: readonly [string, string]) => (
+    <>
+      {playerChip(team[0])}
+      <span className="amp"> &amp; </span>
+      {playerChip(team[1])}
+      <span className="team-total" title="Both ratings added together">
+        {formatRating(teamTotal(team, ratings))}
+      </span>
+    </>
+  );
+
+  /**
+   * How the choices read in the seat pickers. The games count is the point: it
+   * is what stops the admin picking somebody who is already down for their
+   * full quota, rather than finding out when the save is refused.
+   */
+  const scheduledGames = gamesScheduled(matches);
+  const seatLabel = (signup: Signup) =>
+    `${nameOf(signup.playerId)} — ${formatRating(ratingOf(signup.playerId))} · ` +
+    `${scheduledGames.get(signup.playerId) ?? 0}/${signup.requestedSlots} games`;
 
   const signedUpIds = new Set(signups.map((s) => s.playerId));
   const availablePlayers = players.filter((p) => !signedUpIds.has(p.id));
@@ -403,8 +442,10 @@ export default async function SessionPage({
       <div className="card">
         <h2>Line-ups</h2>
         <p className="small muted">
-          Players are matched on rating while avoiding partners and opponents they have already had,
-          across every mixin recorded here. Re-draw gives a different valid set.
+          Nobody partners or faces the same player twice in a mixin, the two teams in a four add up
+          to a similar total, and levels are deliberately mixed so lower-rated players get games
+          with and against stronger ones. Earlier mixins are taken into account too. Re-draw gives a
+          different valid set.
         </p>
 
         {drift.isStale && (
@@ -427,6 +468,51 @@ export default async function SessionPage({
             </div>
           </div>
         )}
+
+        <p className="small muted legend">
+          Levels:{" "}
+          {(["improver", "intermediate", "advanced"] as const).map((level) => (
+            <span key={level} className={`level level-${level}`}>
+              {RATING_LEVEL_LABELS[level]}
+            </span>
+          ))}
+          <span className="muted"> · a number after a pair is their two ratings added together</span>
+          <span className="muted"> · * marks someone who asked for their own level only</span>
+        </p>
+
+        {matches.length > 0 &&
+          (repeats.partnerships.length > 0 || repeats.opponents.length > 0 ? (
+            <div className="note warn small">
+              <strong>Some players meet more than once.</strong> Where the draw did this, it was
+              because there are not enough different players for the number of games and it took
+              the smallest compromise it could. A hand edit can create one too.
+              {repeats.partnerships.length > 0 && (
+                <div>
+                  Partnered twice:{" "}
+                  {repeats.partnerships
+                    .map((r) => `${nameOf(r.playerIds[0])} & ${nameOf(r.playerIds[1])}`)
+                    .join(", ")}
+                  .
+                </div>
+              )}
+              {repeats.opponents.length > 0 && (
+                <div>
+                  Faced each other more than once:{" "}
+                  {repeats.opponents
+                    .map(
+                      (r) =>
+                        `${nameOf(r.playerIds[0])} v ${nameOf(r.playerIds[1])} (${r.times}x)`,
+                    )
+                    .join(", ")}
+                  .
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="small muted">
+              ✓ No repeated partnerships or opponents in this draw.
+            </p>
+          ))}
 
         <div className="actions" style={{ marginBottom: 14 }}>
           <form action={generateScheduleAction}>
@@ -471,9 +557,9 @@ export default async function SessionPage({
                 {round.matches.map((match) => (
                   <div key={`${match.slotIndex}-${match.courtNumber}`} className="match">
                     <span className="court">Court {match.courtNumber}</span>
-                    <span className="side">{match.teamA.map(nameOf).join(" & ")}</span>
+                    <span className="side">{teamSide(match.teamA)}</span>
                     <span className="vs">vs</span>
-                    <span className="side">{match.teamB.map(nameOf).join(" & ")}</span>
+                    <span className="side">{teamSide(match.teamB)}</span>
                     <form action={setScoreAction} className="scorebox">
                       <input type="hidden" name="sessionId" value={session.id} />
                       <input type="hidden" name="slotIndex" value={match.slotIndex} />
@@ -504,8 +590,61 @@ export default async function SessionPage({
                   </div>
                 ))}
               </div>
+
             </div>
           ))
+        )}
+
+        {rounds.length > 0 && (
+          <details className="edit-lineup">
+            <summary>Change who plays, by hand</summary>
+            <p className="small muted">
+              The whole evening at once, on purpose: the changes worth making move somebody
+              relative to somebody else, and saving one block at a time would have to pass through
+              a state where a player is on two courts or over their games. The first two names on
+              a court are one team.
+            </p>
+            <form action={updateLineupAction}>
+              <input type="hidden" name="sessionId" value={session.id} />
+              {rounds
+                .filter((round) => round.matches.length > 0)
+                .map((round) => (
+                  <div key={`edit-${round.slotIndex}`} className="edit-round">
+                    <div className="small muted">{formatSlotRange(round.startMinutes)}</div>
+                    {round.matches.map((match) => (
+                      <div key={`edit-${match.slotIndex}-${match.courtNumber}`} className="seats">
+                        <span className="court">Court {match.courtNumber}</span>
+                        {[...match.teamA, ...match.teamB].map((playerId, seat) => (
+                          <select
+                            key={seat}
+                            name={`seat-${match.slotIndex}-${match.courtNumber}-${seat}`}
+                            defaultValue={playerId}
+                            aria-label={`${formatSlotRange(round.startMinutes)}, court ${
+                              match.courtNumber
+                            }, ${seat < 2 ? "first" : "second"} pair, player ${(seat % 2) + 1}`}
+                          >
+                            {allocation.confirmed.map((signup) => (
+                              <option key={signup.id} value={signup.playerId}>
+                                {seatLabel(signup)}
+                              </option>
+                            ))}
+                          </select>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              <p className="small muted">
+                Nothing is written unless the whole evening still holds: nobody on two courts at
+                the same time, nobody down for more games than they signed up for, and nobody in a
+                block that starts before they said they could get there. A court whose four changes
+                loses any score it had — different people played it.
+              </p>
+              <div className="actions">
+                <button type="submit">Save line-ups</button>
+              </div>
+            </form>
+          </details>
         )}
       </div>
 
@@ -705,7 +844,7 @@ export default async function SessionPage({
               <strong>Line-ups</strong>
             </summary>
             {(() => {
-              const text = scheduleMessage({ session, rounds, playerName: nameOf });
+              const text = scheduleMessage({ session, rounds, playerName: nameOf, ratings });
               return (
                 <>
                   <pre className="message">{text}</pre>
@@ -816,11 +955,20 @@ export default async function SessionPage({
           <hr style={{ margin: "18px 0", border: 0, borderTop: "1px solid var(--border)" }} />
           <form action={deleteSessionAction}>
             <input type="hidden" name="sessionId" value={session.id} />
-            <button type="submit" className="danger">
-              Delete this mixin
-            </button>
+            <label className="check" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input type="checkbox" name="revertRatings" style={{ width: "auto" }} />
+              Also put player ratings back to what they were before this mixin
+            </label>
+            <div className="actions">
+              <button type="submit" className="danger">
+                Delete this mixin
+              </button>
+            </div>
             <p className="small muted">
-              Removes its signups and line-ups. Player ratings and other mixins are untouched.
+              Removes its signups and line-ups. Other mixins are untouched. Ratings stay as they are
+              unless you tick the box — useful for clearing up after a test run, since applying
+              results is otherwise a one-way step. A player whose rating has changed again since is
+              left alone, and the notice says so.
             </p>
           </form>
         </details>

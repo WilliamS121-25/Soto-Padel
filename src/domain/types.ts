@@ -40,6 +40,17 @@ export interface Player {
   rating: number;
   active: boolean;
   notes: string | null;
+  /** Male, female, or not recorded. A label; the draw does not read it. */
+  gender: Gender | null;
+  /**
+   * This player would rather only be put in a four close to their own level.
+   *
+   * The mixin deliberately mixes levels, and most people want that. A few do
+   * not, and the draw treats the flag as theirs to set: any four containing a
+   * flagged player is held to a narrow rating band, at the cost of the mixing
+   * everyone else gets.
+   */
+  similarLevelOnly: boolean;
   createdAt: string;
 }
 
@@ -66,6 +77,20 @@ export interface CourtBooking {
 }
 
 export type SessionStatus = "OPEN" | "CLOSED" | "SCHEDULED" | "COMPLETE";
+
+/**
+ * Recorded so a mixin can be split or balanced by gender if the club ever asks.
+ * Nothing in the draw reads it today — it is a label, and `null` for anyone
+ * imported before the field existed or who would rather not say.
+ */
+export type Gender = "MALE" | "FEMALE";
+
+export const GENDERS: readonly Gender[] = ["MALE", "FEMALE"];
+
+export const GENDER_LABELS: Record<Gender, string> = {
+  MALE: "Male",
+  FEMALE: "Female",
+};
 
 export interface Session {
   id: string;

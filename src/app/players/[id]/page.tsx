@@ -2,7 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import * as db from "@/db";
 import { formatRating, ratingBand, ratingOptions } from "@/domain/rating";
-import { setRatingAction, updatePlayerAction } from "../../actions";
+import { GENDERS, GENDER_LABELS } from "@/domain/types";
+import { deletePlayerAction, setRatingAction, updatePlayerAction } from "../../actions";
 
 export default async function PlayerPage({
   params,
@@ -24,6 +25,9 @@ export default async function PlayerPage({
 
   const partners = history.partnersOf(id);
   const opponents = history.opponentsOf(id);
+  // The same condition the delete itself enforces: a player who appears in a
+  // saved draw cannot be removed without invalidating that draw.
+  const hasPlayed = history.gamesPlayed(id) > 0;
 
   return (
     <>
@@ -34,6 +38,8 @@ export default async function PlayerPage({
       <p className="lede">
         {formatRating(player.rating)} · {ratingBand(player.rating)} ·{" "}
         {history.gamesPlayed(id)} games played
+        {player.gender ? ` · ${GENDER_LABELS[player.gender]}` : ""}
+        {player.similarLevelOnly ? " · own level only" : ""}
         {player.active ? "" : " · inactive"}
       </p>
 
@@ -80,12 +86,32 @@ export default async function PlayerPage({
               <input id="phone" name="phone" defaultValue={player.phone ?? ""} inputMode="tel" />
             </div>
             <div className="field">
+              <label htmlFor="gender">Sex</label>
+              <select id="gender" name="gender" defaultValue={player.gender ?? ""}>
+                <option value="">Not recorded</option>
+                {GENDERS.map((value) => (
+                  <option key={value} value={value}>
+                    {GENDER_LABELS[value]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
               <label htmlFor="notes">Notes</label>
               <input id="notes" name="notes" defaultValue={player.notes ?? ""} />
             </div>
             <label className="check" style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <input type="checkbox" name="active" defaultChecked={player.active} style={{ width: "auto" }} />
               Active — include in mixins
+            </label>
+            <label className="check" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                type="checkbox"
+                name="similarLevelOnly"
+                defaultChecked={player.similarLevelOnly}
+                style={{ width: "auto" }}
+              />
+              Only games at their own level — the draw keeps this four inside a narrow band
             </label>
             <div className="actions">
               <button type="submit">Save details</button>
@@ -176,6 +202,37 @@ export default async function PlayerPage({
             </table>
           )}
         </div>
+      </div>
+
+      <div className="card">
+        <h2>Remove player</h2>
+        {hasPlayed ? (
+          <>
+            <p className="small muted">
+              {player.name} appears in the line-ups of {history.gamesPlayed(id)} recorded{" "}
+              {history.gamesPlayed(id) === 1 ? "game" : "games"}, so they cannot be deleted —
+              removing them would invalidate those draws and the payment schedules that follow from
+              them.
+            </p>
+            <p className="small muted">
+              Untick <strong>Active</strong> under Details instead. That keeps the record and leaves
+              them out of future mixins.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="small muted">
+              Deletes {player.name} for good, along with their rating history and any signup they
+              hold for a mixin that has not been drawn yet. Not reversible.
+            </p>
+            <form action={deletePlayerAction} className="actions">
+              <input type="hidden" name="playerId" value={player.id} />
+              <button type="submit" className="danger">
+                Delete {player.name}
+              </button>
+            </form>
+          </>
+        )}
       </div>
     </>
   );

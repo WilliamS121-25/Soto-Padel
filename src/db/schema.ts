@@ -14,13 +14,15 @@
  */
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS players (
-  id          TEXT PRIMARY KEY,
-  name        TEXT             NOT NULL,
-  phone       TEXT,
-  rating      DOUBLE PRECISION NOT NULL,
-  active      BOOLEAN          NOT NULL DEFAULT TRUE,
-  notes       TEXT,
-  created_at  TEXT             NOT NULL
+  id                  TEXT PRIMARY KEY,
+  name                TEXT             NOT NULL,
+  phone               TEXT,
+  rating              DOUBLE PRECISION NOT NULL,
+  active              BOOLEAN          NOT NULL DEFAULT TRUE,
+  notes               TEXT,
+  gender              TEXT,
+  similar_level_only  BOOLEAN          NOT NULL DEFAULT FALSE,
+  created_at          TEXT             NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS rating_changes (
@@ -31,6 +33,11 @@ CREATE TABLE IF NOT EXISTS rating_changes (
   changed_at      TEXT NOT NULL,
   changed_by      TEXT NOT NULL,
   reason          TEXT,
+  -- The mixin whose results produced this change, where one did. Null for a
+  -- manual edit and for the initial rating. Nullable rather than a cascade so
+  -- deleting a mixin cannot silently erase the history it caused: unwinding
+  -- that is deleteSession's job, and it has to read these rows to do it.
+  session_id      TEXT,
   -- Monotonic within a player, so two changes in the same millisecond still
   -- have a definite order. SQLite leaned on rowid for this; Postgres has no
   -- implicit one, so it is explicit.
@@ -123,4 +130,11 @@ export const ADDED_COLUMNS: { table: string; column: string; type: string }[] = 
   // recorded), so dropping it would destroy the only record of what the old
   // sessions were priced at.
   { table: "sessions", column: "cost_per_player", type: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "players", column: "gender", type: "TEXT" },
+  {
+    table: "players",
+    column: "similar_level_only",
+    type: "BOOLEAN NOT NULL DEFAULT FALSE",
+  },
+  { table: "rating_changes", column: "session_id", type: "TEXT" },
 ];

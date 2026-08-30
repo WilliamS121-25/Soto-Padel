@@ -1,9 +1,12 @@
 import { buildPaymentSchedule, formatMoney, type PaymentSchedule } from "./payments";
 import { formatDateLong, formatSlotCount, formatSlotRange, formatTime } from "./time";
 import { computeCapacity, type Capacity } from "./timeline";
+import { formatRating } from "./rating";
 import {
+  GENDER_LABELS,
   PAYMENT_METHODS,
   PAYMENT_METHOD_LABELS,
+  type Player,
   type Round,
   type Session,
   type Signup,
@@ -23,6 +26,20 @@ export function currencySymbol(code: string): string {
 }
 
 export type PlayerNameLookup = (playerId: string) => string;
+
+/**
+ * The two players' ratings added together.
+ *
+ * A sum rather than an average because it is what the club asked to see, and
+ * because comparing two sums is the same comparison as two averages with one
+ * less step for the reader.
+ */
+export function teamTotal(
+  team: readonly [string, string],
+  ratings: ReadonlyMap<string, number>,
+): number {
+  return Number(((ratings.get(team[0]) ?? 0) + (ratings.get(team[1]) ?? 0)).toFixed(2));
+}
 
 function money(amount: number, currency: string): string {
   return `${currencySymbol(currency)}${formatMoney(amount)}`;
@@ -107,20 +124,30 @@ export interface ScheduleMessageInput {
   playerName: PlayerNameLookup;
   /** Include the "sitting out" line for each round. Default true. */
   showSittingOut?: boolean;
+  /**
+   * Ratings, to print each team's total beside it. Two totals side by side are
+   * the plainest evidence a game is fair, which is why they go in the message
+   * and not just the admin's screen. Omit and the line-ups read as names only.
+   */
+  ratings?: ReadonlyMap<string, number>;
 }
 
 /** The running order, round by round. */
 export function scheduleMessage(input: ScheduleMessageInput): string {
-  const { session, rounds, playerName, showSittingOut = true } = input;
+  const { session, rounds, playerName, showSittingOut = true, ratings } = input;
   const lines = [`\u{1F3BE} *Line-ups — ${session.name}*`, `\u{1F4C5} ${formatDateLong(session.date)}`];
+
+  const withTotal = (team: readonly [string, string]) => {
+    const names = team.map(playerName).join(" & ");
+    if (!ratings) return names;
+    return `${names} (${formatRating(teamTotal(team, ratings))})`;
+  };
 
   for (const round of rounds) {
     if (round.matches.length === 0 && round.sittingOut.length === 0) continue;
     lines.push("", `*${formatSlotRange(round.startMinutes)}*`);
     for (const match of round.matches) {
-      const teamA = match.teamA.map(playerName).join(" & ");
-      const teamB = match.teamB.map(playerName).join(" & ");
-      lines.push(`Court ${match.courtNumber}: ${teamA}  vs  ${teamB}`);
+      lines.push(`Court ${match.courtNumber}: ${withTotal(match.teamA)}  vs  ${withTotal(match.teamB)}`);
     }
     if (showSittingOut && round.sittingOut.length > 0) {
       lines.push(`_Sitting out: ${round.sittingOut.map(playerName).join(", ")}_`);
@@ -183,4 +210,42 @@ export function paymentMessageFromMatches(
 ): string {
   const schedule = buildPaymentSchedule(session, signups, blocksPlayed);
   return paymentMessage({ session, schedule, playerName });
+}
+
+export interface PlayerListInput {
+  players: Player[];
+  /** Include the rating against each name. Default true. */
+  showRatings?: boolean;
+}
+
+/**
+ * The player list, for pasting into the group so everyone can check their own
+ * rating — the club's ratings are not a secret, and someone who thinks theirs
+ * is wrong can only say so if they can see it.
+ */
+export function playerListMessage(input: PlayerListInput): string {
+  const { players, showRatings = true } = input;
+  const sorted = [...players].sort(
+    (a, b) => b.rating - a.rating || a.name.localeCompare(b.name),
+  );
+
+  const lines = [`\u{1F3BE} *Players (${sorted.length})*`];
+  if (sorted.length === 0) {
+    lines.push("", "No players yet.");
+    return lines.join("\n");
+  }
+
+  lines.push("");
+  for (const player of sorted) {
+    const tags = [
+      player.gender ? GENDER_LABELS[player.gender] : null,
+      player.similarLevelOnly ? "own level only" : null,
+      player.active ? null : "inactive",
+    ].filter((tag): tag is string => tag !== null);
+    const suffix = tags.length > 0 ? ` [${tags.join(", ")}]` : "";
+    lines.push(
+      showRatings ? `• ${player.name} — ${formatRating(player.rating)}${suffix}` : `• ${player.name}${suffix}`,
+    );
+  }
+  return lines.join("\n");
 }

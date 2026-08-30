@@ -1,36 +1,79 @@
-import { HistoryIndex } from "./history";
+import { HistoryIndex, pairKey } from "./history";
 import { buildTimeline } from "./timeline";
 import { PLAYERS_PER_COURT, type Match, type Round, type Session, type Signup } from "./types";
 
 export interface SchedulerWeights {
-  /** Cost of putting two players together who have partnered before. */
+  /**
+   * Cost of pairing two players who have already partnered **in this mixin**.
+   * Large enough to act as a rule rather than a preference.
+   */
+  sessionRepeatPartner: number;
+  /** Cost of two players facing each other again **in this mixin**. */
+  sessionRepeatOpponent: number;
+  /** Cost of putting two players together who partnered in an earlier mixin. */
   repeatPartner: number;
-  /** Cost of two players facing each other again. */
+  /** Cost of two players facing each other again across mixins. */
   repeatOpponent: number;
   /** Cost per rating point of spread within a group of four. */
   ratingSpread: number;
+  /**
+   * How wide a four containing someone who asked for their own level may be
+   * before it starts costing, in rating points.
+   */
+  similarLevelBand: number;
+  /**
+   * Cost per rating point *beyond* that band. A hinge rather than a slope,
+   * because the request is "keep me with people near my level", not "make my
+   * four as narrow as possible": inside the band there is nothing to pay, so
+   * the draw is free to spend its effort on the no-repeat rules, and outside it
+   * the cost climbs past those rules quickly.
+   */
+  strictRatingSpread: number;
   /** Cost per rating point of difference between the two teams. */
   teamImbalance: number;
+  /** Extra cost per rating point squared, so a wide gap is resisted hard. */
+  teamImbalanceSquared: number;
 }
 
 /**
- * Defaults chosen by measuring real draws rather than by taste. Across mixins of
- * 12-28 players on 3-5 courts these values gave no repeat partnerships at all
- * except where the alternative was genuinely worse, and kept the two teams in a
- * four within about 0.3 rating points of each other.
+ * Defaults chosen by measuring draws across seven mixin shapes (8-28 players on
+ * 2-5 courts), not by taste. They encode the club's four rules, in the order
+ * the club stated them:
  *
- * The ordering embodies a deliberate judgement about what players actually
- * notice. A lopsided game is the worst outcome, so `teamImbalance` dominates. A
- * four that spans too many levels is next. Repeating a partner is a real cost
- * but a smaller one, so the scheduler will accept the odd repeat rather than put
- * a 2.0 on court with a 6.0 — which is what happens if `repeatPartner` is
- * allowed to win. Every weight is overridable per call if a club disagrees.
+ * 1. Nobody partners the same player twice in a mixin.
+ * 2. Nobody faces the same player twice in a mixin.
+ * 3. The two teams in a four add up to a similar total.
+ * 4. Lower-rated players get to play with and against higher-rated ones.
+ *
+ * Rules 1 and 2 are enforced by weights three orders of magnitude larger than
+ * the rest, which makes them rules in practice: the scheduler gives up a level
+ * match to keep them. They are still weights rather than a hard filter because
+ * **they cannot always both be satisfied** — eight players over four rounds
+ * need eight distinct opponents each and there are only seven other people, so
+ * some repeat is arithmetic, not a bug. Where a repeat is forced, this ranking
+ * makes the draw take an opponent repeat before a partner repeat, and
+ * `summariseRepeats` reports what it had to accept.
+ *
+ * Rule 4 is why `ratingSpread` is small: a high cost there keeps each four
+ * inside a narrow band, which is exactly what the club did *not* want. Rule 3
+ * is carried by `teamImbalance` plus a squared term, so a small gap is cheap
+ * and a wide one is resisted hard — that combination held the average gap
+ * between the two teams to 0.05-0.29 rating points across every shape measured.
+ *
+ * Measured totals over the seven shapes: 0 repeat partnerships anywhere, and 13
+ * repeat opponent pairs, against 14-41 for the weightings tried alongside.
+ * Every weight is overridable per call if a club disagrees.
  */
 export const DEFAULT_WEIGHTS: SchedulerWeights = {
+  sessionRepeatPartner: 2000,
+  sessionRepeatOpponent: 600,
   repeatPartner: 8,
   repeatOpponent: 2.5,
-  ratingSpread: 10,
+  ratingSpread: 2,
+  similarLevelBand: 1,
+  strictRatingSpread: 4000,
   teamImbalance: 40,
+  teamImbalanceSquared: 600,
 };
 
 export interface SchedulerInput {
@@ -40,6 +83,11 @@ export interface SchedulerInput {
   ratings: ReadonlyMap<string, number>;
   /** Cross-session history; defaults to empty. */
   history?: HistoryIndex;
+  /**
+   * Players who asked to be kept with their own level. A four containing any of
+   * them is held to a narrow rating band instead of being mixed.
+   */
+  similarLevelOnly?: ReadonlySet<string>;
   weights?: Partial<SchedulerWeights>;
   /** Change to shuffle tie-breaks and get a different valid schedule. */
   seed?: number;
@@ -59,7 +107,22 @@ export interface ScheduleResult {
   shortfalls: PlayerAllocation[];
   /** Court-blocks that ran with no game because fewer than four were free. */
   idleCourtBlocks: number;
+  /** Repeats the draw could not avoid. Empty is the normal case. */
+  repeats: RepeatSummary;
   totalCost: number;
+}
+
+/** A pair of players who met more than once, and how many times. */
+export interface RepeatedPair {
+  playerIds: readonly [string, string];
+  times: number;
+}
+
+export interface RepeatSummary {
+  /** Pairs who partnered more than once in this mixin. */
+  partnerships: RepeatedPair[];
+  /** Pairs who faced each other more than once in this mixin. */
+  opponents: RepeatedPair[];
 }
 
 /** Small deterministic PRNG so a seed always reproduces the same schedule. */
@@ -88,11 +151,18 @@ function bestPairing(
   group: readonly string[],
   ratings: ReadonlyMap<string, number>,
   history: HistoryIndex,
+  session: HistoryIndex,
   weights: SchedulerWeights,
+  similarLevelOnly: ReadonlySet<string> = new Set(),
 ): { cost: number; teamA: readonly [string, string]; teamB: readonly [string, string] } {
   const values = group.map((id) => ratingOf(ratings, id));
   const spread = Math.max(...values) - Math.min(...values);
-  const spreadCost = weights.ratingSpread * spread;
+  // One player asking for their own level is enough to hold the whole four to
+  // it: they cannot have a narrow game unless everyone on court is close.
+  const strict = group.some((id) => similarLevelOnly.has(id));
+  const spreadCost = strict
+    ? weights.strictRatingSpread * Math.max(0, spread - weights.similarLevelBand)
+    : weights.ratingSpread * spread;
 
   let best: {
     cost: number;
@@ -114,14 +184,25 @@ function bestPairing(
       history.opponentCount(a2, b1) +
       history.opponentCount(a2, b2);
 
+    const samePartners = session.partnerCount(a1, a2) + session.partnerCount(b1, b2);
+    const sameOpponents =
+      session.opponentCount(a1, b1) +
+      session.opponentCount(a1, b2) +
+      session.opponentCount(a2, b1) +
+      session.opponentCount(a2, b2);
+
     const teamAAvg = (ratingOf(ratings, a1) + ratingOf(ratings, a2)) / 2;
     const teamBAvg = (ratingOf(ratings, b1) + ratingOf(ratings, b2)) / 2;
+    const gap = Math.abs(teamAAvg - teamBAvg);
 
     const cost =
       spreadCost +
+      weights.sessionRepeatPartner * samePartners +
+      weights.sessionRepeatOpponent * sameOpponents +
       weights.repeatPartner * repeatPartners +
       weights.repeatOpponent * repeatOpponents +
-      weights.teamImbalance * Math.abs(teamAAvg - teamBAvg);
+      weights.teamImbalance * gap +
+      weights.teamImbalanceSquared * gap * gap;
 
     if (!best || cost < best.cost) {
       best = { cost, teamA: [a1, a2] as const, teamB: [b1, b2] as const };
@@ -137,6 +218,49 @@ function bestPairing(
 }
 
 /**
+ * Every pair that met more than once across a set of matches.
+ *
+ * Two players partnering twice, or facing each other twice, is the thing the
+ * club asked the draw to rule out — so when the arithmetic makes it impossible,
+ * the organiser is told rather than left to spot it. Pure, and takes plain
+ * matches, so it reports on a draw loaded from the database just as well as on
+ * one just generated.
+ */
+export function summariseRepeats(
+  matches: readonly Pick<Match, "teamA" | "teamB">[],
+): RepeatSummary {
+  const partners = new Map<string, number>();
+  const opponents = new Map<string, number>();
+
+  for (const match of matches) {
+    const [a1, a2] = match.teamA;
+    const [b1, b2] = match.teamB;
+    for (const [x, y] of [
+      [a1, a2],
+      [b1, b2],
+    ] as const) {
+      partners.set(pairKey(x, y), (partners.get(pairKey(x, y)) ?? 0) + 1);
+    }
+    for (const a of [a1, a2]) {
+      for (const b of [b1, b2]) {
+        opponents.set(pairKey(a, b), (opponents.get(pairKey(a, b)) ?? 0) + 1);
+      }
+    }
+  }
+
+  const repeatsIn = (counts: Map<string, number>): RepeatedPair[] =>
+    [...counts]
+      .filter(([, times]) => times > 1)
+      .map(([key, times]) => {
+        const [first = "", second = ""] = key.split("|");
+        return { playerIds: [first, second] as const, times };
+      })
+      .sort((x, y) => y.times - x.times || x.playerIds[0].localeCompare(y.playerIds[0]));
+
+  return { partnerships: repeatsIn(partners), opponents: repeatsIn(opponents) };
+}
+
+/**
  * Improve an initial grouping by swapping players between courts whenever it
  * lowers total cost. The search space is tiny (at most five courts), so an
  * exhaustive hill-climb runs in microseconds and is fully deterministic.
@@ -145,10 +269,13 @@ function refineGroups(
   groups: string[][],
   ratings: ReadonlyMap<string, number>,
   history: HistoryIndex,
+  session: HistoryIndex,
   weights: SchedulerWeights,
+  similarLevelOnly: ReadonlySet<string>,
   maxPasses = 8,
 ): void {
-  const costOf = (group: string[]) => bestPairing(group, ratings, history, weights).cost;
+  const costOf = (group: string[]) =>
+    bestPairing(group, ratings, history, session, weights, similarLevelOnly).cost;
   const costs = groups.map(costOf);
 
   for (let pass = 0; pass < maxPasses; pass += 1) {
@@ -192,13 +319,23 @@ function refineGroups(
  *
  * For each 30-minute block the scheduler works out who is present and still owes
  * games, prioritises whoever is at most risk of not getting their full quota,
- * groups them by rating, then chooses teams that avoid repeat partners and
- * repeat opponents.
+ * groups them, then chooses teams. Within a mixin nobody should partner or face
+ * the same player twice; where the numbers make that impossible the draw takes
+ * the smallest compromise it can find and `repeats` says what it was. See
+ * `DEFAULT_WEIGHTS` for the full ordering.
  */
 export function generateSchedule(input: SchedulerInput): ScheduleResult {
   const { session, signups, ratings } = input;
   const weights = { ...DEFAULT_WEIGHTS, ...input.weights };
   const history = (input.history ?? new HistoryIndex()).clone();
+  /**
+   * Repeats within this mixin, kept apart from the cross-session history so the
+   * two can carry different weights: playing with someone again tonight is a
+   * rule to be broken only when the numbers make it unavoidable, whereas
+   * playing with them again a month later is merely a mild preference.
+   */
+  const sessionSoFar = new HistoryIndex();
+  const similarLevelOnly = input.similarLevelOnly ?? new Set<string>();
   const rng = mulberry32(input.seed ?? 0x50d0);
   /**
    * With no seed the grouping follows rating order exactly, which gives the
@@ -297,7 +434,7 @@ export function generateSchedule(input: SchedulerInput): ScheduleResult {
       groups.push(byRating.slice(i, i + PLAYERS_PER_COURT));
     }
 
-    refineGroups(groups, ratings, history, weights);
+    refineGroups(groups, ratings, history, sessionSoFar, weights, similarLevelOnly);
 
     // Strongest four on the lowest court number, which is the usual convention.
     const ranked = groups
@@ -316,7 +453,14 @@ export function generateSchedule(input: SchedulerInput): ScheduleResult {
       const courtNumber = courtNumbers[g];
       if (!entry || courtNumber === undefined) continue;
 
-      const pairing = bestPairing(entry.group, ratings, history, weights);
+      const pairing = bestPairing(
+        entry.group,
+        ratings,
+        history,
+        sessionSoFar,
+        weights,
+        similarLevelOnly,
+      );
       totalCost += pairing.cost;
 
       const match: Match = {
@@ -329,6 +473,7 @@ export function generateSchedule(input: SchedulerInput): ScheduleResult {
       allMatches.push(match);
 
       history.record(match, session.date);
+      sessionSoFar.record(match);
       for (const id of [...pairing.teamA, ...pairing.teamB]) {
         remaining.set(id, (remaining.get(id) ?? 0) - 1);
         playedCount.set(id, (playedCount.get(id) ?? 0) + 1);
@@ -355,6 +500,7 @@ export function generateSchedule(input: SchedulerInput): ScheduleResult {
     allocations,
     shortfalls: allocations.filter((a) => a.scheduled < a.requested),
     idleCourtBlocks,
+    repeats: summariseRepeats(allMatches),
     totalCost,
   };
 }

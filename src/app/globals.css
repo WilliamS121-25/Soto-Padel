@@ -11,6 +11,11 @@
   --warn-soft: #fdf1dc;
   --danger: #a32626;
   --danger-soft: #fbe9e9;
+  /* The three levels the line-ups are colour-coded by. Darkened from the
+     obvious green/blue/red so they clear 4.5:1 against the card background. */
+  --level-improver: #1c6b4a;
+  --level-intermediate: #1f4fa8;
+  --level-advanced: #a32626;
   --radius: 10px;
   --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
@@ -30,6 +35,10 @@
     --warn-soft: #302614;
     --danger: #f07171;
     --danger-soft: #341c1c;
+    /* Lightened for dark mode, where the print-weight versions go muddy. */
+    --level-improver: #4cc38a;
+    --level-intermediate: #7ab0ff;
+    --level-advanced: #f07171;
   }
 }
 
@@ -171,6 +180,23 @@ pre.message {
 .match .court { font-size: 12px; font-weight: 650; color: var(--muted); min-width: 62px; }
 .match .side { font-weight: 500; }
 .match .vs { color: var(--muted); font-size: 12px; }
+.match .amp { color: var(--muted); font-weight: 400; }
+
+/* Level colour, used on names in the line-ups and in the legend above them.
+   Never the only signal: the rating and the band are written out elsewhere on
+   the page, so this reads as emphasis rather than as information on its own. */
+.level { font-weight: 600; }
+.level-improver { color: var(--level-improver); }
+.level-intermediate { color: var(--level-intermediate); }
+.level-advanced { color: var(--level-advanced); }
+
+.team-total {
+  margin-left: 6px; padding: 1px 6px; border-radius: 999px;
+  background: var(--surface-2); color: var(--muted);
+  font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+
+.legend { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
 
 .courtpick { display: grid; gap: 8px; }
 .courtrow {
@@ -183,6 +209,20 @@ pre.message {
 .courtrow .field { margin: 0; }
 
 .login-wrap { max-width: 380px; margin: 12vh auto; }
+
+/* Hand-editing a block's line-ups. Tucked behind a summary so the normal
+   reading view stays a list of games rather than a form. */
+.edit-lineup { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
+.edit-lineup > summary { cursor: pointer; font-weight: 600; }
+.edit-lineup > p { margin: 8px 0 0; }
+.edit-lineup form { margin-top: 12px; }
+.edit-lineup form p { margin: 10px 0 0; }
+.edit-lineup .actions { margin-top: 10px; }
+.edit-round { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px 8px; margin-bottom: 8px; }
+.edit-round > .small { margin-bottom: 2px; }
+.seats { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 4px 0; }
+.seats .court { font-size: 12px; font-weight: 650; color: var(--muted); min-width: 62px; }
+.seats select { width: auto; min-width: 150px; max-width: 100%; padding: 4px 6px; font-size: 13px; }
 
 .scorebox { display: flex; align-items: center; gap: 4px; margin-left: auto; }
 .scorebox input { width: 46px; padding: 4px 6px; text-align: center; font-variant-numeric: tabular-nums; }

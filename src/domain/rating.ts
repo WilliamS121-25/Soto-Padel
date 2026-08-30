@@ -45,6 +45,33 @@ export function ratingBand(value: number, scale: RatingScale = DEFAULT_RATING_SC
 }
 
 /**
+ * The three levels the line-ups are colour-coded by.
+ *
+ * Coarser than `ratingBand` on purpose: on court there are only three groups
+ * worth telling apart at a glance, and the club named them. Elite shares the
+ * advanced colour rather than introducing a fourth that nobody asked for; the
+ * band label still says Elite where it applies.
+ */
+export type RatingLevel = "improver" | "intermediate" | "advanced";
+
+export const RATING_LEVEL_LABELS: Record<RatingLevel, string> = {
+  improver: "Improving",
+  intermediate: "Intermediate",
+  advanced: "Advanced",
+};
+
+export function ratingLevel(
+  value: number,
+  scale: RatingScale = DEFAULT_RATING_SCALE,
+): RatingLevel {
+  const span = scale.max - scale.min;
+  const position = span === 0 ? 0 : (value - scale.min) / span;
+  if (position < 0.25) return "improver";
+  if (position < 0.5) return "intermediate";
+  return "advanced";
+}
+
+/**
  * Clamp a rating into the scale without snapping it to a step.
  *
  * Manual rating changes come off a dropdown and land on clean quarter points.

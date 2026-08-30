@@ -89,6 +89,295 @@ describe("players", () => {
   });
 });
 
+describe("deleting a player", () => {
+  const mixin = async (name: string) =>
+    db.createSession(
+      {
+        name,
+        date: "2025-09-12",
+        startMinutes: parseTime("18:00"),
+        slotCount: 1,
+        courts: [{ courtNumber: 1, startMinutes: parseTime("18:00"), slotCount: 1 }],
+        costPerPlayer: 1000,
+        currency: "EUR",
+      },
+      "will",
+    );
+
+  it("removes a player who has never been in a mixin, history and all", async () => {
+    const player = await db.createPlayer({ name: "Typo McTypo", rating: 3.5 }, "will");
+    const outcome = await db.deletePlayer(player.id);
+
+    expect(outcome).toEqual({ deleted: true, removedFromSessions: 0 });
+    expect(await db.getPlayer(player.id)).toBeNull();
+    expect(await db.listRatingHistory(player.id)).toEqual([]);
+  });
+
+  it("takes their signups with them, and says how many", async () => {
+    const player = await db.createPlayer({ name: "Signed Up", rating: 4 }, "will");
+    const one = await mixin("Delete test A");
+    const two = await mixin("Delete test B");
+    for (const session of [one, two]) {
+      await db.addSignup({
+        sessionId: session.id,
+        playerId: player.id,
+        requestedSlots: 1,
+        earliestStartMinutes: parseTime("18:00"),
+      });
+    }
+
+    const outcome = await db.deletePlayer(player.id);
+    expect(outcome).toEqual({ deleted: true, removedFromSessions: 2 });
+    expect(await db.listSignups(one.id)).toEqual([]);
+    expect(await db.listSignups(two.id)).toEqual([]);
+  });
+
+  it("refuses when the player is in a saved draw, and names the mixin", async () => {
+    const four = [];
+    for (const name of ["Draw One", "Draw Two", "Draw Three", "Draw Four"]) {
+      four.push(await db.createPlayer({ name, rating: 4 }, "will"));
+    }
+    const session = await mixin("Already drawn");
+    await db.replaceMatches(session.id, [
+      {
+        slotIndex: 0,
+        courtNumber: 1,
+        teamA: [four[0]!.id, four[1]!.id],
+        teamB: [four[2]!.id, four[3]!.id],
+      },
+    ]);
+
+    const outcome = await db.deletePlayer(four[0]!.id);
+    expect(outcome.deleted).toBe(false);
+    if (outcome.deleted) throw new Error("expected the delete to be refused");
+    expect(outcome.playedIn.map((s) => s.name)).toEqual(["Already drawn"]);
+
+    // Refusing must leave everything exactly as it was, draw included.
+    expect(await db.getPlayer(four[0]!.id)).not.toBeNull();
+    expect(await db.listMatches(session.id)).toHaveLength(1);
+  });
+
+  it("lets the player go once the draw is cleared", async () => {
+    const four = [];
+    for (const name of ["Clear One", "Clear Two", "Clear Three", "Clear Four"]) {
+      four.push(await db.createPlayer({ name, rating: 4 }, "will"));
+    }
+    const session = await mixin("Draw then clear");
+    await db.replaceMatches(session.id, [
+      {
+        slotIndex: 0,
+        courtNumber: 1,
+        teamA: [four[0]!.id, four[1]!.id],
+        teamB: [four[2]!.id, four[3]!.id],
+      },
+    ]);
+    await db.replaceMatches(session.id, []);
+
+    expect((await db.deletePlayer(four[0]!.id)).deleted).toBe(true);
+  });
+
+  it("does nothing at all for an id that is not there", async () => {
+    expect(await db.deletePlayer("no-such-player")).toEqual({
+      deleted: true,
+      removedFromSessions: 0,
+    });
+  });
+});
+
+describe("the new player fields", () => {
+  it("records sex and the own-level preference, and defaults both to unset", async () => {
+    const plain = await db.createPlayer({ name: "Plain Jane", rating: 3.5 }, "will");
+    expect(plain.gender).toBeNull();
+    expect(plain.similarLevelOnly).toBe(false);
+
+    const detailed = await db.createPlayer(
+      { name: "Detailed Dave", rating: 4, gender: "MALE", similarLevelOnly: true },
+      "will",
+    );
+    expect(detailed.gender).toBe("MALE");
+    expect(detailed.similarLevelOnly).toBe(true);
+  });
+
+  it("changes them, and can clear the sex back to unset", async () => {
+    const player = await db.createPlayer({ name: "Changeable", rating: 4 }, "will");
+    await db.updatePlayer(player.id, { gender: "FEMALE", similarLevelOnly: true });
+    expect(await db.getPlayer(player.id)).toMatchObject({
+      gender: "FEMALE",
+      similarLevelOnly: true,
+    });
+
+    await db.updatePlayer(player.id, { gender: null, similarLevelOnly: false });
+    expect(await db.getPlayer(player.id)).toMatchObject({
+      gender: null,
+      similarLevelOnly: false,
+    });
+  });
+
+  it("leaves them alone when the patch does not mention them", async () => {
+    const player = await db.createPlayer(
+      { name: "Untouched", rating: 4, gender: "FEMALE", similarLevelOnly: true },
+      "will",
+    );
+    await db.updatePlayer(player.id, { name: "Untouched, renamed" });
+    expect(await db.getPlayer(player.id)).toMatchObject({
+      name: "Untouched, renamed",
+      gender: "FEMALE",
+      similarLevelOnly: true,
+    });
+  });
+});
+
+describe("deleting a mixin", () => {
+  const mixinWithFour = async (name: string) => {
+    const four = [];
+    for (const suffix of ["A", "B", "C", "D"]) {
+      four.push(await db.createPlayer({ name: `${name} ${suffix}`, rating: 4 }, "will"));
+    }
+    const session = await db.createSession(
+      {
+        name,
+        date: "2025-09-19",
+        startMinutes: parseTime("18:00"),
+        slotCount: 1,
+        courts: [{ courtNumber: 1, startMinutes: parseTime("18:00"), slotCount: 1 }],
+        costPerPlayer: 1000,
+        currency: "EUR",
+      },
+      "will",
+    );
+    for (const player of four) {
+      await db.addSignup({
+        sessionId: session.id,
+        playerId: player.id,
+        requestedSlots: 1,
+        earliestStartMinutes: parseTime("18:00"),
+      });
+    }
+    await db.replaceMatches(session.id, [
+      {
+        slotIndex: 0,
+        courtNumber: 1,
+        teamA: [four[0]!.id, four[1]!.id],
+        teamB: [four[2]!.id, four[3]!.id],
+      },
+    ]);
+    await db.setMatchScore(session.id, 0, 1, 6, 1);
+    return { session, four };
+  };
+
+  const applyScores = async (sessionId: string, label: string) => {
+    const matches = await db.listMatches(sessionId);
+    const players = await db.listPlayers(true);
+    const changes = ratingChangesFromResults(
+      matches.map((m) => ({
+        teamA: m.teamA,
+        teamB: m.teamB,
+        gamesA: m.scoreA ?? 0,
+        gamesB: m.scoreB ?? 0,
+      })),
+      new Map(players.map((p) => [p.id, p.rating])),
+    );
+    return db.applyRatingChanges(sessionId, changes, "will", label);
+  };
+
+  it("reports what went with it", async () => {
+    const { session } = await mixinWithFour("Counted");
+    const outcome = await db.deleteSession(session.id);
+    expect(outcome).toMatchObject({ signupsRemoved: 4, matchesRemoved: 1 });
+    expect(await db.getSession(session.id)).toBeNull();
+  });
+
+  it("leaves ratings where they are unless asked", async () => {
+    const { session, four } = await mixinWithFour("Ratings kept");
+    await applyScores(session.id, "Ratings kept");
+    const moved = (await db.getPlayer(four[0]!.id))!.rating;
+    expect(moved).not.toBe(4);
+
+    await db.deleteSession(session.id);
+    expect((await db.getPlayer(four[0]!.id))!.rating).toBe(moved);
+  });
+
+  it("puts the ratings back when asked, history and all", async () => {
+    const { session, four } = await mixinWithFour("Ratings reverted");
+    const applied = await applyScores(session.id, "Ratings reverted");
+    expect(applied.applied).toBe(4);
+    expect((await db.getPlayer(four[0]!.id))!.rating).not.toBe(4);
+
+    const outcome = await db.deleteSession(session.id, { revertRatings: true });
+    expect(outcome.revertedRatings).toHaveLength(4);
+    expect(outcome.keptRatings).toEqual([]);
+
+    for (const player of four) {
+      expect((await db.getPlayer(player.id))!.rating).toBe(4);
+      // The change is gone from the history too, not just undone on the player.
+      const reasons = (await db.listRatingHistory(player.id)).map((c) => c.reason);
+      expect(reasons).not.toContain(
+        reasons.find((reason) => reason?.startsWith("Ratings reverted:")),
+      );
+      expect(reasons).toContain("Initial rating");
+    }
+  });
+
+  it("refuses to rewind a player whose rating moved again afterwards", async () => {
+    const { session, four } = await mixinWithFour("Changed since");
+    await applyScores(session.id, "Changed since");
+    // The organiser has since judged this player by hand.
+    await db.setPlayerRating(four[0]!.id, 5, "will", "moved up after the club champs");
+
+    const outcome = await db.deleteSession(session.id, { revertRatings: true });
+    expect(outcome.keptRatings.map((r) => r.playerId)).toEqual([four[0]!.id]);
+    expect(outcome.revertedRatings).toHaveLength(3);
+
+    // The later change stands, untouched.
+    expect((await db.getPlayer(four[0]!.id))!.rating).toBe(5);
+    for (const player of four.slice(1)) {
+      expect((await db.getPlayer(player.id))!.rating).toBe(4);
+    }
+  });
+
+  it("does not touch a rating another mixin moved", async () => {
+    const first = await mixinWithFour("Earlier mixin");
+    await applyScores(first.session.id, "Earlier mixin");
+    const afterFirst = (await db.getPlayer(first.four[0]!.id))!.rating;
+
+    const second = await db.createSession(
+      {
+        name: "Later mixin",
+        date: "2025-09-26",
+        startMinutes: parseTime("18:00"),
+        slotCount: 1,
+        courts: [{ courtNumber: 1, startMinutes: parseTime("18:00"), slotCount: 1 }],
+        costPerPlayer: 1000,
+        currency: "EUR",
+      },
+      "will",
+    );
+    await db.deleteSession(second.id, { revertRatings: true });
+    expect((await db.getPlayer(first.four[0]!.id))!.rating).toBe(afterFirst);
+  });
+
+  it("is a no-op on a mixin nobody signed up to", async () => {
+    const empty = await db.createSession(
+      {
+        name: "Nobody came",
+        date: "2025-10-03",
+        startMinutes: parseTime("18:00"),
+        slotCount: 1,
+        courts: [{ courtNumber: 1, startMinutes: parseTime("18:00"), slotCount: 1 }],
+        costPerPlayer: 1000,
+        currency: "EUR",
+      },
+      "will",
+    );
+    expect(await db.deleteSession(empty.id, { revertRatings: true })).toEqual({
+      revertedRatings: [],
+      keptRatings: [],
+      signupsRemoved: 0,
+      matchesRemoved: 0,
+    });
+  });
+});
+
 describe("sessions and their courts", () => {
   it("round-trips staggered court bookings", async () => {
     const session = await db.createSession(
@@ -281,6 +570,72 @@ describe("matches and history", () => {
 
     // Excluding the session being rescheduled leaves its own draw out.
     expect((await db.buildHistoryIndex(session.id)).partnerCount(ids[0], ids[2])).toBe(0);
+  });
+});
+
+describe("editing a block's line-ups by hand", () => {
+  it("rewrites only the courts given, and clears the score on those it changed", async () => {
+    const players = await Promise.all(
+      ["A", "B", "C", "D", "E", "F", "G", "H"].map((n) =>
+        db.createPlayer({ name: `Edit ${n}`, rating: 4 }, "will"),
+      ),
+    );
+    const id = players.map((p) => p.id) as string[];
+    const session = await db.createSession(
+      {
+        name: "Hand Edit",
+        date: "2025-10-04",
+        startMinutes: parseTime("18:00"),
+        slotCount: 1,
+        costPerPlayer: 1000,
+        courts: [
+          { courtNumber: 1, startMinutes: parseTime("18:00"), slotCount: 1 },
+          { courtNumber: 2, startMinutes: parseTime("18:00"), slotCount: 1 },
+        ],
+      },
+      "will",
+    );
+
+    await db.replaceMatches(session.id, [
+      { slotIndex: 0, courtNumber: 1, teamA: [id[0]!, id[1]!], teamB: [id[2]!, id[3]!] },
+      { slotIndex: 0, courtNumber: 2, teamA: [id[4]!, id[5]!], teamB: [id[6]!, id[7]!] },
+    ]);
+    await db.setMatchScore(session.id, 0, 1, 6, 3);
+    await db.setMatchScore(session.id, 0, 2, 5, 4);
+
+    // Swap one player between the two courts, writing only court 1.
+    await db.updateMatchLineups(session.id, [
+      { slotIndex: 0, courtNumber: 1, teamA: [id[0]!, id[4]!], teamB: [id[2]!, id[3]!] },
+    ]);
+
+    const after = await db.listMatches(session.id);
+    const first = after.find((m) => m.courtNumber === 1);
+    const second = after.find((m) => m.courtNumber === 2);
+
+    expect(first?.teamA).toEqual([id[0], id[4]]);
+    // Different players played that block, so the old result is not theirs.
+    expect(first?.scoreA).toBeNull();
+    expect(first?.scoreB).toBeNull();
+
+    // The untouched court keeps both its four and its score.
+    expect(second?.teamA).toEqual([id[4], id[5]]);
+    expect(second?.scoreA).toBe(5);
+    expect(second?.scoreB).toBe(4);
+  });
+
+  it("does nothing when handed no matches", async () => {
+    const session = await db.createSession(
+      {
+        name: "Hand Edit Empty",
+        date: "2025-10-05",
+        startMinutes: parseTime("18:00"),
+        slotCount: 1,
+        costPerPlayer: 1000,
+        courts: [{ courtNumber: 1, startMinutes: parseTime("18:00"), slotCount: 1 }],
+      },
+      "will",
+    );
+    await expect(db.updateMatchLineups(session.id, [])).resolves.toBeUndefined();
   });
 });
 

@@ -4,6 +4,7 @@ import { HistoryIndex, type MatchRecord } from "@/domain/history";
 import { MAX_GAMES_PER_BLOCK } from "@/domain/types";
 import type {
   CourtBooking,
+  Gender,
   Match,
   PaymentMethod,
   Player,
@@ -73,6 +74,8 @@ interface PlayerRow {
   rating: number;
   active: boolean;
   notes: string | null;
+  gender: string | null;
+  similar_level_only: boolean;
   created_at: string;
 }
 
@@ -83,6 +86,10 @@ const toPlayer = (row: PlayerRow): Player => ({
   rating: Number(row.rating),
   active: row.active,
   notes: row.notes,
+  // Stored as free text so an unknown value from an older row reads as "not
+  // recorded" rather than crashing the page.
+  gender: row.gender === "MALE" || row.gender === "FEMALE" ? row.gender : null,
+  similarLevelOnly: Boolean(row.similar_level_only),
   createdAt: row.created_at,
 });
 
@@ -102,7 +109,14 @@ export async function getPlayer(id: string): Promise<Player | null> {
 }
 
 export async function createPlayer(
-  input: { name: string; rating: number; phone?: string | null; notes?: string | null },
+  input: {
+    name: string;
+    rating: number;
+    phone?: string | null;
+    notes?: string | null;
+    gender?: Gender | null;
+    similarLevelOnly?: boolean;
+  },
   admin: string,
 ): Promise<Player> {
   const db = await getDb();
@@ -112,9 +126,19 @@ export async function createPlayer(
 
   await db.transaction(async (tx) => {
     await tx.query(
-      `INSERT INTO players (id, name, phone, rating, active, notes, created_at)
-       VALUES ($1, $2, $3, $4, TRUE, $5, $6)`,
-      [id, input.name.trim(), input.phone?.trim() || null, rating, input.notes?.trim() || null, createdAt],
+      `INSERT INTO players
+         (id, name, phone, rating, active, notes, gender, similar_level_only, created_at)
+       VALUES ($1, $2, $3, $4, TRUE, $5, $6, $7, $8)`,
+      [
+        id,
+        input.name.trim(),
+        input.phone?.trim() || null,
+        rating,
+        input.notes?.trim() || null,
+        input.gender ?? null,
+        input.similarLevelOnly ?? false,
+        createdAt,
+      ],
     );
     await tx.query(
       `INSERT INTO rating_changes (id, player_id, previous_rating, new_rating, changed_at, changed_by, reason)
@@ -128,21 +152,83 @@ export async function createPlayer(
   return created;
 }
 
+/** A mixin, named just enough to point the organiser at it. */
+export interface SessionRef {
+  id: string;
+  name: string;
+  date: string;
+}
+
+export type DeletePlayerOutcome =
+  | { deleted: true; removedFromSessions: number }
+  | { deleted: false; playedIn: SessionRef[] };
+
+/**
+ * Remove a player, along with their signups and rating history.
+ *
+ * Refused when the player appears in a saved draw. `matches` references
+ * `players` with no cascade, so the database would reject it anyway — but the
+ * reason matters more than the error: a draw containing a deleted player is not
+ * just a broken row, it invalidates the line-ups, the payment schedule derived
+ * from them and any score recorded against them. Making the player inactive is
+ * the right move there, and the page says so.
+ *
+ * Where it does go ahead, the signups go with the player, so the count is
+ * returned and reported rather than left for the organiser to notice.
+ */
+export async function deletePlayer(playerId: string): Promise<DeletePlayerOutcome> {
+  const db = await getDb();
+  return db.transaction(async (tx) => {
+    const { rows: played } = await tx.query<{ id: string; name: string; date: string }>(
+      `SELECT DISTINCT s.id, s.name, s.date
+         FROM matches m JOIN sessions s ON s.id = m.session_id
+        WHERE $1 IN (m.team_a1, m.team_a2, m.team_b1, m.team_b2)
+        ORDER BY s.date DESC`,
+      [playerId],
+    );
+    if (played.length > 0) return { deleted: false, playedIn: played };
+
+    const { rows: counted } = await tx.query<{ count: string }>(
+      "SELECT COUNT(*) AS count FROM signups WHERE player_id = $1",
+      [playerId],
+    );
+    const removedFromSessions = Number(counted[0]?.count ?? 0);
+
+    // Signups and rating history cascade from the player row.
+    await tx.query("DELETE FROM players WHERE id = $1", [playerId]);
+    return { deleted: true, removedFromSessions };
+  });
+}
+
 export async function updatePlayer(
   id: string,
-  patch: { name?: string; phone?: string | null; notes?: string | null; active?: boolean },
+  patch: {
+    name?: string;
+    phone?: string | null;
+    notes?: string | null;
+    active?: boolean;
+    gender?: Gender | null;
+    similarLevelOnly?: boolean;
+  },
 ): Promise<void> {
   const existing = await getPlayer(id);
   if (!existing) throw new Error(`Unknown player ${id}`);
   const db = await getDb();
 
-  await db.query("UPDATE players SET name = $1, phone = $2, notes = $3, active = $4 WHERE id = $5", [
-    patch.name?.trim() ?? existing.name,
-    patch.phone === undefined ? existing.phone : patch.phone?.trim() || null,
-    patch.notes === undefined ? existing.notes : patch.notes?.trim() || null,
-    patch.active ?? existing.active,
-    id,
-  ]);
+  await db.query(
+    `UPDATE players SET name = $1, phone = $2, notes = $3, active = $4, gender = $5,
+            similar_level_only = $6
+      WHERE id = $7`,
+    [
+      patch.name?.trim() ?? existing.name,
+      patch.phone === undefined ? existing.phone : patch.phone?.trim() || null,
+      patch.notes === undefined ? existing.notes : patch.notes?.trim() || null,
+      patch.active ?? existing.active,
+      patch.gender === undefined ? existing.gender : patch.gender,
+      patch.similarLevelOnly ?? existing.similarLevelOnly,
+      id,
+    ],
+  );
 }
 
 /**
@@ -154,7 +240,7 @@ export async function setPlayerRating(
   newRating: number,
   admin: string,
   reason?: string | null,
-  options: { snap?: boolean } = {},
+  options: { snap?: boolean; sessionId?: string } = {},
 ): Promise<void> {
   const existing = await getPlayer(id);
   if (!existing) throw new Error(`Unknown player ${id}`);
@@ -168,9 +254,19 @@ export async function setPlayerRating(
   await db.transaction(async (tx) => {
     await tx.query("UPDATE players SET rating = $1 WHERE id = $2", [rating, id]);
     await tx.query(
-      `INSERT INTO rating_changes (id, player_id, previous_rating, new_rating, changed_at, changed_by, reason)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [newId(), id, existing.rating, rating, nowIso(), admin, reason?.trim() || null],
+      `INSERT INTO rating_changes
+         (id, player_id, previous_rating, new_rating, changed_at, changed_by, reason, session_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        newId(),
+        id,
+        existing.rating,
+        rating,
+        nowIso(),
+        admin,
+        reason?.trim() || null,
+        options.sessionId ?? null,
+      ],
     );
   });
 }
@@ -361,9 +457,89 @@ export async function updateSession(
   });
 }
 
-export async function deleteSession(id: string): Promise<void> {
+export interface DeleteSessionOutcome {
+  /** Players whose rating was put back to what it was before this mixin. */
+  revertedRatings: { playerId: string; from: number; to: number }[];
+  /**
+   * Players this mixin moved whose rating was *not* put back, because it has
+   * been changed again since. Rewinding those would throw the later change away.
+   */
+  keptRatings: { playerId: string; changedSince: number }[];
+  signupsRemoved: number;
+  matchesRemoved: number;
+}
+
+/**
+ * Delete a mixin, and optionally undo what it did to player ratings.
+ *
+ * Signups and matches go with the mixin through the schema's cascades. Ratings
+ * do not: they live on the player, and applying results is normally a one-way
+ * step (see `applyRatingChanges`). Deleting the mixin is the one place undoing
+ * it is coherent, because the mixin those results came from is going away — so
+ * `revertRatings` walks the changes this mixin recorded and puts each player
+ * back to the rating they held before it.
+ *
+ * A player who has been changed *again* since is left alone and reported.
+ * Rewinding them would silently discard that later change, and no amount of
+ * bookkeeping makes guessing on the organiser's behalf the right call.
+ */
+export async function deleteSession(
+  id: string,
+  options: { revertRatings?: boolean } = {},
+): Promise<DeleteSessionOutcome> {
   const db = await getDb();
-  await db.query("DELETE FROM sessions WHERE id = $1", [id]);
+  return db.transaction(async (tx) => {
+    const counts = async (table: string) => {
+      const { rows } = await tx.query<{ count: string }>(
+        `SELECT COUNT(*) AS count FROM ${table} WHERE session_id = $1`,
+        [id],
+      );
+      return Number(rows[0]?.count ?? 0);
+    };
+    const signupsRemoved = await counts("signups");
+    const matchesRemoved = await counts("matches");
+
+    const revertedRatings: DeleteSessionOutcome["revertedRatings"] = [];
+    const keptRatings: DeleteSessionOutcome["keptRatings"] = [];
+
+    if (options.revertRatings) {
+      const { rows } = await tx.query<{
+        id: string;
+        player_id: string;
+        previous_rating: number | null;
+        new_rating: number;
+        current: number;
+        later: string;
+      }>(
+        `SELECT rc.id, rc.player_id, rc.previous_rating, rc.new_rating, p.rating AS current,
+                (SELECT COUNT(*) FROM rating_changes later
+                  WHERE later.player_id = rc.player_id
+                    AND (later.changed_at, later.seq) > (rc.changed_at, rc.seq)) AS later
+           FROM rating_changes rc JOIN players p ON p.id = rc.player_id
+          WHERE rc.session_id = $1
+          ORDER BY rc.changed_at DESC, rc.seq DESC`,
+        [id],
+      );
+
+      for (const row of rows) {
+        const previous = row.previous_rating;
+        if (Number(row.later) > 0 || previous === null) {
+          keptRatings.push({ playerId: row.player_id, changedSince: Number(row.current) });
+          continue;
+        }
+        await tx.query("UPDATE players SET rating = $1 WHERE id = $2", [previous, row.player_id]);
+        await tx.query("DELETE FROM rating_changes WHERE id = $1", [row.id]);
+        revertedRatings.push({
+          playerId: row.player_id,
+          from: Number(row.new_rating),
+          to: Number(previous),
+        });
+      }
+    }
+
+    await tx.query("DELETE FROM sessions WHERE id = $1", [id]);
+    return { revertedRatings, keptRatings, signupsRemoved, matchesRemoved };
+  });
 }
 
 /* ---------------------------------------------------------------- signups -- */
@@ -528,6 +704,38 @@ export async function replaceMatches(sessionId: string, matches: Match[]): Promi
   });
 }
 
+/**
+ * Rewrite the four on specific courts, leaving the rest of the draw alone.
+ *
+ * The counterpart to `replaceMatches` for a hand edit. Two differences matter:
+ * only the courts passed in are touched, so scores recorded elsewhere in the
+ * evening survive; and the score on a court whose four changed is cleared, for
+ * the same reason regenerating clears all of them — different people played it,
+ * so the old result is not theirs.
+ */
+export async function updateMatchLineups(sessionId: string, matches: Match[]): Promise<void> {
+  if (matches.length === 0) return;
+  const db = await getDb();
+  await db.transaction(async (tx) => {
+    for (const match of matches) {
+      await tx.query(
+        `UPDATE matches
+         SET team_a1 = $1, team_a2 = $2, team_b1 = $3, team_b2 = $4, score_a = NULL, score_b = NULL
+         WHERE session_id = $5 AND slot_index = $6 AND court_number = $7`,
+        [
+          match.teamA[0],
+          match.teamA[1],
+          match.teamB[0],
+          match.teamB[1],
+          sessionId,
+          match.slotIndex,
+          match.courtNumber,
+        ],
+      );
+    }
+  });
+}
+
 interface MatchRecordRow extends MatchRow {
   session_id: string;
   date: string;
@@ -626,7 +834,8 @@ export async function applyRatingChanges(
       change.to,
       admin,
       `${sessionLabel}: ${sign}${change.delta.toFixed(2)} from ${change.gamesCounted} game${change.gamesCounted === 1 ? "" : "s"}`,
-      { snap: false },
+      // Tagged with the mixin so deleting it can unwind exactly these changes.
+      { snap: false, sessionId },
     );
   }
 

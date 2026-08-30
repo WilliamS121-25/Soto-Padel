@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  RATING_LEVEL_LABELS,
   formatRating,
   isValidRating,
   normaliseRating,
   ratingBand,
+  ratingLevel,
   ratingOptions,
 } from "@/domain/rating";
 import { DEFAULT_RATING_SCALE, RATING_SCALE_PRESETS } from "@/domain/types";
@@ -49,5 +51,40 @@ describe("classic padel rating scale", () => {
     expect(formatRating(3.5)).toBe("3.50");
     expect(ratingBand(1.5)).toBe("Improver");
     expect(ratingBand(6.5)).toBe("Elite");
+  });
+});
+
+describe("the three levels the line-ups are coloured by", () => {
+  it("splits the classic scale at the quarter and the half", () => {
+    expect(ratingLevel(1.0)).toBe("improver");
+    expect(ratingLevel(2.4)).toBe("improver");
+    expect(ratingLevel(2.5)).toBe("intermediate");
+    expect(ratingLevel(3.9)).toBe("intermediate");
+    expect(ratingLevel(4.0)).toBe("advanced");
+    expect(ratingLevel(7.0)).toBe("advanced");
+  });
+
+  it("folds Elite into advanced rather than adding a fourth colour", () => {
+    // The band label still distinguishes them; the colour does not.
+    expect(ratingBand(6.5)).toBe("Elite");
+    expect(ratingLevel(6.5)).toBe("advanced");
+    expect(ratingLevel(4.5)).toBe("advanced");
+  });
+
+  it("uses fractions of the scale, so a different scale still works", () => {
+    const tenPoint = { min: 1, max: 10, step: 0.5 };
+    expect(ratingLevel(2, tenPoint)).toBe("improver");
+    expect(ratingLevel(4, tenPoint)).toBe("intermediate");
+    expect(ratingLevel(8, tenPoint)).toBe("advanced");
+  });
+
+  it("copes with a scale of zero width rather than dividing by it", () => {
+    expect(ratingLevel(3, { min: 3, max: 3, step: 0.5 })).toBe("improver");
+  });
+
+  it("has a label for every level", () => {
+    for (const level of ["improver", "intermediate", "advanced"] as const) {
+      expect(RATING_LEVEL_LABELS[level]).toBeTruthy();
+    }
   });
 });

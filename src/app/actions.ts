@@ -5,6 +5,12 @@ import { redirect } from "next/navigation";
 import * as db from "@/db";
 import { parseSignupText } from "@/domain/parse-signups";
 import { normaliseRating } from "@/domain/rating";
+import {
+  checkLineups,
+  describeLineupProblem,
+  isCompleteFour,
+  lineupChanged,
+} from "@/domain/lineup-edits";
 import { generateSchedule } from "@/domain/scheduler";
 import {
   materialRatingChanges,
@@ -13,7 +19,15 @@ import {
 } from "@/domain/rating-updates";
 import { parseTime } from "@/domain/time";
 import { formatDateLong } from "@/domain/time";
-import { FACILITY_COURTS, type CourtBooking, type PaymentMethod, type SessionStatus } from "@/domain/types";
+import {
+  FACILITY_COURTS,
+  GENDERS,
+  type CourtBooking,
+  type Gender,
+  type Match,
+  type PaymentMethod,
+  type SessionStatus,
+} from "@/domain/types";
 import { parseMoney } from "@/domain/payments";
 import { adminName, setAdminName } from "@/lib/admin";
 
@@ -26,6 +40,12 @@ function str(form: FormData, key: string): string {
 function int(form: FormData, key: string, fallback: number): number {
   const value = Number.parseInt(str(form, key), 10);
   return Number.isFinite(value) ? value : fallback;
+}
+
+/** Blank means "not recorded", which is a real answer and the default. */
+function readGender(form: FormData): Gender | null {
+  const value = str(form, "gender");
+  return GENDERS.includes(value as Gender) ? (value as Gender) : null;
 }
 
 /** Redirect back to a page carrying a message for the user to read. */
@@ -88,7 +108,14 @@ export async function createPlayerAction(form: FormData): Promise<void> {
   if (!Number.isFinite(rating)) backTo("/players", { error: "Pick a rating for the player." });
 
   await db.createPlayer(
-    { name, rating, phone: str(form, "phone") || null, notes: str(form, "notes") || null },
+    {
+      name,
+      rating,
+      phone: str(form, "phone") || null,
+      notes: str(form, "notes") || null,
+      gender: readGender(form),
+      similarLevelOnly: Boolean(form.get("similarLevelOnly")),
+    },
     admin,
   );
   revalidatePath("/players");
@@ -116,10 +143,46 @@ export async function updatePlayerAction(form: FormData): Promise<void> {
     phone: str(form, "phone") || null,
     notes: str(form, "notes") || null,
     active: Boolean(form.get("active")),
+    gender: readGender(form),
+    similarLevelOnly: Boolean(form.get("similarLevelOnly")),
   });
   revalidatePath("/players");
   revalidatePath(`/players/${playerId}`);
   backTo(`/players/${playerId}`, { notice: "Player updated." });
+}
+
+export async function deletePlayerAction(form: FormData): Promise<void> {
+  const playerId = str(form, "playerId");
+  if (!playerId) backTo("/players", { error: "Unknown player." });
+
+  const player = await db.getPlayer(playerId);
+  if (!player) backTo("/players", { error: "Unknown player." });
+
+  const outcome = await db.deletePlayer(playerId);
+  if (!outcome.deleted) {
+    const named = outcome.playedIn
+      .slice(0, 3)
+      .map((s) => `${s.name} (${s.date})`)
+      .join(", ");
+    const more = outcome.playedIn.length > 3 ? ` and ${outcome.playedIn.length - 3} more` : "";
+    backTo(`/players/${playerId}`, {
+      error:
+        `${player.name} appears in the line-ups for ${named}${more}, so deleting them would ` +
+        "invalidate those draws and their payment schedules. Untick Active instead to keep the " +
+        "record and leave them out of future mixins.",
+    });
+  }
+
+  revalidatePath("/players");
+  revalidatePath("/");
+  const removed = outcome.removedFromSessions;
+  backTo("/players", {
+    notice:
+      removed > 0
+        ? `Deleted ${player.name}, along with their signup${removed === 1 ? "" : "s"} for ` +
+          `${removed} mixin${removed === 1 ? "" : "s"} and their rating history.`
+        : `Deleted ${player.name} and their rating history.`,
+  });
 }
 
 /* ----------------------------------------------------------------- sessions */
@@ -207,9 +270,37 @@ export async function updateSessionAction(form: FormData): Promise<void> {
 
 export async function deleteSessionAction(form: FormData): Promise<void> {
   const sessionId = str(form, "sessionId");
-  await db.deleteSession(sessionId);
+  const session = await db.getSession(sessionId);
+  if (!session) backTo("/", { error: "That mixin is already gone." });
+
+  // Reverting is opt-in, because for a real mixin the results happened and the
+  // ratings they produced are the record. For a test run it is the whole point.
+  const revertRatings = Boolean(form.get("revertRatings"));
+  const outcome = await db.deleteSession(sessionId, { revertRatings });
+
+  const parts = [`Deleted ${session.name}`];
+  if (outcome.signupsRemoved > 0 || outcome.matchesRemoved > 0) {
+    parts.push(
+      `with ${outcome.signupsRemoved} signup${outcome.signupsRemoved === 1 ? "" : "s"} and ` +
+        `${outcome.matchesRemoved} line-up${outcome.matchesRemoved === 1 ? "" : "s"}`,
+    );
+  }
+  if (revertRatings) {
+    parts.push(
+      outcome.revertedRatings.length > 0
+        ? `and put ${outcome.revertedRatings.length} rating${outcome.revertedRatings.length === 1 ? "" : "s"} back`
+        : "and there were no ratings from it to put back",
+    );
+  }
+  const kept =
+    outcome.keptRatings.length > 0
+      ? ` ${outcome.keptRatings.length} rating${outcome.keptRatings.length === 1 ? " was" : "s were"} left alone, ` +
+        "having been changed again since — rewinding would have thrown that change away."
+      : "";
+
   revalidatePath("/");
-  backTo("/", { notice: "Mixin deleted." });
+  revalidatePath("/players");
+  backTo("/", { notice: `${parts.join(" ")}.${kept}` });
 }
 
 /* ------------------------------------------------------------------ signups */
@@ -401,6 +492,7 @@ export async function generateScheduleAction(form: FormData): Promise<void> {
     session,
     signups: allocation.confirmed,
     ratings: new Map(players.map((p) => [p.id, p.rating])),
+    similarLevelOnly: new Set(players.filter((p) => p.similarLevelOnly).map((p) => p.id)),
     // The session's own previous draw must not count as history to avoid.
     history: await db.buildHistoryIndex(sessionId),
     seed: form.get("reroll") ? Date.now() % 100000 : undefined,
@@ -418,6 +510,88 @@ export async function generateScheduleAction(form: FormData): Promise<void> {
       : "";
   backTo(`/sessions/${sessionId}`, {
     notice: `Line-ups generated: ${result.matches.length} games.${shortfall}`,
+  });
+}
+
+/**
+ * Save line-ups the admin edited by hand.
+ *
+ * The form covers the **whole** draw, not one block, and that is the important
+ * decision. Every rearrangement worth making moves somebody relative to somebody
+ * else — swapping two players between courts in the same half-hour, or trading
+ * two people between blocks — and a block-at-a-time save would have to pass
+ * through a state with one of them double-booked or over their games, which the
+ * check below rightly refuses. One form, one save, one verdict.
+ *
+ * Nothing is written unless the whole evening holds. Only the courts whose four
+ * actually changed are written, so scores elsewhere survive.
+ */
+export async function updateLineupAction(form: FormData): Promise<void> {
+  const sessionId = str(form, "sessionId");
+  const session = await db.getSession(sessionId);
+  if (!session) backTo("/", { error: "That mixin no longer exists." });
+
+  const saved = await db.listMatches(sessionId);
+  if (saved.length === 0) {
+    backTo(`/sessions/${sessionId}`, { error: "There are no line-ups to change yet." });
+  }
+
+  const proposed: Match[] = [];
+  for (const match of saved) {
+    const prefix = `seat-${match.slotIndex}-${match.courtNumber}`;
+    const seats = [0, 1, 2, 3].map((seat) => str(form, `${prefix}-${seat}`));
+    if (!isCompleteFour(seats)) {
+      backTo(`/sessions/${sessionId}`, {
+        error: `Court ${match.courtNumber} at slot ${match.slotIndex + 1} needs all four places filled.`,
+      });
+    }
+    proposed.push({ ...match, teamA: [seats[0], seats[1]], teamB: [seats[2], seats[3]] });
+  }
+
+  const { allocateSignups } = await import("@/domain/signups");
+  const allocation = allocateSignups(session, await db.listSignups(sessionId));
+  const problems = checkLineups({ session, confirmed: allocation.confirmed, matches: proposed });
+
+  if (problems.length > 0) {
+    const players = await db.listPlayers(true);
+    const byId = new Map(players.map((player) => [player.id, player.name]));
+    const nameOf = (playerId: string) => byId.get(playerId) ?? "Someone";
+
+    // Only the first few: this travels back in the URL, and fixing the first
+    // usually clears the rest.
+    const shown = problems.slice(0, 3).map((problem) => describeLineupProblem(problem, nameOf));
+    const rest = problems.length - shown.length;
+    backTo(`/sessions/${sessionId}`, {
+      error: `Not saved. ${shown.join(" ")}${rest > 0 ? ` And ${rest} more.` : ""}`,
+    });
+  }
+
+  const before = new Map(
+    saved.map((match) => [`${match.slotIndex}-${match.courtNumber}`, match]),
+  );
+  const changed = proposed.filter((match) => {
+    const existing = before.get(`${match.slotIndex}-${match.courtNumber}`);
+    return existing ? lineupChanged(existing, match) : false;
+  });
+
+  if (changed.length === 0) {
+    backTo(`/sessions/${sessionId}`, { notice: "Nothing was changed." });
+  }
+
+  await db.updateMatchLineups(sessionId, changed);
+  revalidatePath(`/sessions/${sessionId}`);
+
+  const scoresCleared = changed.filter((match) => {
+    const existing = before.get(`${match.slotIndex}-${match.courtNumber}`);
+    return existing?.scoreA !== null && existing?.scoreA !== undefined;
+  }).length;
+
+  backTo(`/sessions/${sessionId}`, {
+    notice:
+      `Line-ups updated on ${changed.length} court${changed.length === 1 ? "" : "s"}.` +
+      (scoresCleared > 0
+        ? ` ${scoresCleared} score${scoresCleared === 1 ? " was" : "s were"} cleared — different players are on court now.`
+        : ""),
   });
 }
 

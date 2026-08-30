@@ -73,16 +73,17 @@ in a page or an action**.
 | `timeline.ts` | The 30-minute grid, per-court windows, capacity |
 | `rating.ts` | Scale validation, snapping, bands |
 | `signups.ts` | Place allocation, reserve queue, promotion on withdrawal |
-| `scheduler.ts` | Draw generation, round reconstruction, stale-draw detection |
+| `scheduler.ts` | Draw generation and its rules, round reconstruction, repeat and stale-draw reporting |
+| `lineup-edits.ts` | Checking a draw an admin edited by hand, and the pieces the edit form needs |
 | `history.ts` | Partner and opponent counts across sessions |
 | `rating-updates.ts` | Turning recorded scores into rating changes |
 | `payments.ts` | Per-head charging, money formatting and parsing |
-| `whatsapp.ts` | The four copy-paste message builders |
+| `whatsapp.ts` | The five copy-paste message builders, and team totals |
 | `parse-signups.ts` | Reading pasted WhatsApp text |
 
 ## Ideas the code is built on
 
-Get these four and the rest follows.
+Get these and the rest follows.
 
 **1. Capacity is player-blocks, not people.** Every court seats four players for
 every half-hour it is booked. Five courts for two hours is 5 × 4 × 4 = 80
@@ -102,12 +103,32 @@ deliberate: add a court and the reserves are promoted with no extra code, and th
 lists can never drift out of step with capacity. Do not add a code path that
 writes `CONFIRMED`/`RESERVE` as though it were the source of truth.
 
-**4. A saved draw goes stale.** Signups keep moving after the line-ups are drawn.
+**4. The draw's rules are ordered, and two of them can be impossible.** No
+repeat partner in a mixin comes first, then no repeat opponent, then even teams,
+then mixed levels — except for a player with `similarLevelOnly`, whose fours are
+held to `similarLevelBand` by a hinge cost (nothing inside the band, steep
+outside it) that outranks the repeat rules. The first two are weights three orders of magnitude above the
+rest rather than a hard filter, because they cannot always both hold — eight
+players over four rounds need eight distinct opponents from a pool of seven. Where
+a repeat is forced the ordering makes the draw give up an opponent before a
+partner, and `summariseRepeats` reports what it accepted so the session page can
+say so. Do not "fix" a wide level spread inside a four: rule four wants it.
+
+**5. A saved draw goes stale.** Signups keep moving after the line-ups are drawn.
 `detectScheduleDrift` compares a saved draw against the current confirmed list,
 and the session page refuses to let that pass silently — the payment split is
 derived from the draw, so a stale draw means the wrong people are being charged.
 
-**5. Ratings derived from results are applied once, deliberately.** Scores are
+**6. A hand edit is checked, the draw is not.** The line-ups can be edited a
+block at a time, and `checkLineups` is what makes that safe. The generator cannot
+produce a player on two courts at once or over their quota — it allocates from
+the same counters it decrements — but a typed-in change can, so every save is
+checked against the **whole** evening before anything is written. Note what is
+*not* checked: repeat partners and opponents. Those are weights in the draw
+(idea 4), not rules, and an admin who wants two people to play again is entitled
+to say so; the repeat panel reports the result either way.
+
+**7. Ratings derived from results are applied once, deliberately.** Scores are
 recorded per match as games won; `ratingChangesFromResults` turns them into
 per-player deltas, and `applyRatingChanges` writes them exactly once per session
 (guarded by `sessions.ratings_applied_at`). Two consequences to respect:
@@ -122,6 +143,10 @@ per-player deltas, and `applyRatingChanges` writes them exactly once per session
 
 ## Conventions
 
+- **`similarLevelOnly` is a hinge, not a slope.** `strictRatingSpread` charges
+  only for spread *beyond* `similarLevelBand`, because the request is "keep me
+  near my level", not "make my four as narrow as possible". A linear cost traded
+  level against the repeat rules point-for-point and landed on neither.
 - **Money is integer minor units (cents).** Never a float. Parse with
   `parseMoney`, render with `formatMoney`. The payment schedule is a flat price
   per head, so it divides nothing and has no rounding remainder to lose; if a
@@ -174,11 +199,18 @@ typical evening — it is what stops a well-meaning tweak making the whole featu
 inert, which is exactly what an early `k` of 0.08 did.
 
 **The scheduler's weights were tuned by measurement, not taste.** They were swept
-across five mixin shapes (12–28 players, 3–5 courts) comparing repeat
-partnerships, worst level spread and worst team gap. If you change
-`DEFAULT_WEIGHTS`, re-measure across several shapes rather than one — a single
-scenario sits inside the hill-climb's run-to-run noise, and tuning on it fits
-noise rather than quality.
+across seven mixin shapes (8–28 players, 2–5 courts) comparing repeat
+partnerships, repeat opponents, mean and worst team gap, and level spread. If you
+change `DEFAULT_WEIGHTS`, re-measure across several shapes rather than one — a
+single scenario sits inside the hill-climb's run-to-run noise, and tuning on it
+fits noise rather than quality. The numbers the current defaults were chosen
+against are in the `DEFAULT_WEIGHTS` comment.
+
+Do not assert an upper bound on the level spread within a four: mixing levels is
+now a requirement, not a defect. Team **balance** is the property to bound, and
+`8p/2c/4b` is the shape that proves the repeat rules are weights rather than a
+filter — assert there that partnerships stay clean and that the accepted
+opponent repeats are reported.
 
 ## Things worth knowing before changing something
 
@@ -194,6 +226,18 @@ noise rather than quality.
 - Regenerating a draw clears its scores (`replaceMatches` writes no score
   columns). That is intended: a new draw puts different people on court, so an
   old result is void.
+- `updateMatchLineups` is the hand-edit counterpart and is deliberately narrower:
+  it rewrites only the courts passed to it, so scores elsewhere in the evening
+  survive, and clears the score on a court whose four changed for the same reason
+  regenerating clears all of them.
+- **The line-up editor is one form over the whole evening, deliberately.** Every
+  rearrangement worth making moves somebody relative to somebody else — two
+  players swapping courts in a block, or trading places between blocks — and
+  saving a block at a time would have to pass through a state with one of them
+  double-booked or over their games, which `checkLineups` rightly refuses. It was
+  built per-block first and that is exactly what went wrong: with a draw that
+  meets everyone's quota, no per-block save that changes who plays can ever be
+  legal. One form, one save, one verdict.
 - `session_courts` is keyed on `(session_id, court_number)`, so a court can hold
   one window per mixin. Two separate windows for the same court on the same night
   would need that key relaxed. `buildTimeline` already copes.
@@ -227,6 +271,20 @@ noise rather than quality.
   record of what those sessions were priced at. Migrated sessions read back at
   zero and the organiser retypes the price; `tests/db-migration.test.ts` covers
   both that and the fact that inserts still work over the top of the old column.
+- `matches` references `players` **without** a cascade, unlike `signups` and
+  `rating_changes`. That is what makes `deletePlayer` refusable: a player in a
+  saved draw cannot be removed, because doing so would invalidate the line-ups,
+  the payment schedule derived from them and any recorded score. `deletePlayer`
+  checks and returns `{ deleted: false, playedIn }` rather than letting the
+  foreign key throw, so the page can explain and point at Active instead.
+- **`deleteSession(id, { revertRatings: true })` is the only place applying
+  results is undone**, and it is coherent only because the mixin those results
+  came from is going away. It reads `rating_changes.session_id`, which
+  `applyRatingChanges` stamps, and skips any player changed again since —
+  rewinding those would discard the later change. Do not generalise it into an
+  un-apply button; see idea 7.
+- `players.gender` is stored as free text and narrowed on read, so an unexpected
+  value from an old row reads as "not recorded" instead of breaking the page.
 - `signups.note` is stored and accepted by `addSignup`, but no form supplies it
   yet. It is a spare field, not dead code to delete on sight.
 
@@ -246,6 +304,11 @@ Flagged so they are not mistaken for requirements:
   admin name is a label, not a credential. Fine for a link shared between a few
   organisers, not fine if this ever holds anything sensitive.
 - Nothing tracks whether a payment was actually collected — only the schedule.
+- `players.gender` is recorded but unused: no rule reads it. It exists so a
+  gender-balanced or split mixin is a change to the draw rather than a migration.
+- The level colours are three, not the four `ratingBand` names: Elite shares the
+  advanced colour because the club named three. `ratingLevel` is the colour, and
+  it is deliberately coarser than the band label.
 - A 30-minute block is scored as games won per team, capped at
   `MAX_GAMES_PER_BLOCK`. Points, sets and tiebreaks are not modelled.
 - How fast ratings move (`DEFAULT_RATING_UPDATE_OPTIONS`) was calibrated against
@@ -256,7 +319,7 @@ Flagged so they are not mistaken for requirements:
 ## Maintaining this file
 
 Update it in the same commit as the change that invalidates it: a new command, a
-new top-level directory, a new domain module, or a change to one of the four
+new top-level directory, a new domain module, or a change to one of the core
 ideas above. Keep it about what is not obvious from reading the code.
 
 <!-- BEGIN:nextjs-agent-rules -->
