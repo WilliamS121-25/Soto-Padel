@@ -468,7 +468,7 @@ describe("spotting a draw that has gone stale", () => {
   const result = generateSchedule({ session, signups, ratings: ratingMap(players) });
 
   it("is happy when the draw matches the signups", () => {
-    const drift = detectScheduleDrift(signups, result.matches);
+    const drift = detectScheduleDrift(session, signups, result.matches);
     expect(drift.isStale).toBe(false);
     expect(drift.scheduledButNotAttending).toEqual([]);
     expect(drift.confirmedButNotScheduled).toEqual([]);
@@ -476,19 +476,67 @@ describe("spotting a draw that has gone stale", () => {
 
   it("flags a player who dropped out after the draw", () => {
     const remaining = signups.filter((s) => s.playerId !== "p3");
-    const drift = detectScheduleDrift(remaining, result.matches);
+    const drift = detectScheduleDrift(session, remaining, result.matches);
     expect(drift.isStale).toBe(true);
     expect(drift.scheduledButNotAttending).toEqual(["p3"]);
   });
 
   it("flags a reserve promoted after the draw", () => {
     const promoted = [...signups, makeSignup("late", 2, "18:00", 9)];
-    const drift = detectScheduleDrift(promoted, result.matches);
+    const drift = detectScheduleDrift(session, promoted, result.matches);
     expect(drift.isStale).toBe(true);
     expect(drift.confirmedButNotScheduled).toEqual(["late"]);
   });
 
   it("says nothing when no draw has been made yet", () => {
-    expect(detectScheduleDrift(signups, []).isStale).toBe(false);
+    expect(detectScheduleDrift(session, signups, []).isStale).toBe(false);
+  });
+
+  it("flags games left stranded when a court's hours are cut short", () => {
+    // The organiser shortens both courts from two half-hours to one, after the
+    // draw. The second block's games are still stored and still charged for.
+    const shorter = makeSession({
+      slotCount: 1,
+      courts: [court(1, "18:00", 1), court(2, "18:00", 1)],
+    });
+    const drift = detectScheduleDrift(shorter, signups, result.matches);
+
+    expect(drift.isStale).toBe(true);
+    expect(drift.outsideTheBooking.map((m) => m.slotIndex)).toEqual([1, 1]);
+  });
+
+  it("flags games left stranded when a court is dropped", () => {
+    const oneCourt = makeSession({ slotCount: 2, courts: [court(1, "18:00", 2)] });
+    const drift = detectScheduleDrift(oneCourt, signups, result.matches);
+
+    expect(drift.isStale).toBe(true);
+    expect(drift.outsideTheBooking.every((m) => m.courtNumber === 2)).toBe(true);
+    expect(drift.outsideTheBooking).toHaveLength(2);
+  });
+
+  it("is happy when a court is lengthened, which strands nothing", () => {
+    const longer = makeSession({
+      slotCount: 4,
+      courts: [court(1, "18:00", 4), court(2, "18:00", 4)],
+    });
+    expect(detectScheduleDrift(longer, signups, result.matches).outsideTheBooking).toEqual([]);
+  });
+
+  it("flags games on a court whose window moved past them", () => {
+    // Court 2 now starts an hour later, so its 18:00 games have nowhere to sit.
+    const later = makeSession({
+      slotCount: 4,
+      courts: [court(1, "18:00", 2), court(2, "19:00", 2)],
+    });
+    const drift = detectScheduleDrift(later, signups, result.matches);
+    expect(drift.isStale).toBe(true);
+    expect(drift.outsideTheBooking.every((m) => m.courtNumber === 2)).toBe(true);
+  });
+
+  it("leaves a stranded game off the rounds rather than showing it as still on", () => {
+    const oneCourt = makeSession({ slotCount: 2, courts: [court(1, "18:00", 2)] });
+    const shown = reconstructRounds(oneCourt, signups, result.matches).flatMap((r) => r.matches);
+    expect(shown.every((m) => m.courtNumber === 1)).toBe(true);
+    expect(shown.length).toBeLessThan(result.matches.length);
   });
 });

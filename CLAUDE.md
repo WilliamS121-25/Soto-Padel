@@ -114,10 +114,14 @@ a repeat is forced the ordering makes the draw give up an opponent before a
 partner, and `summariseRepeats` reports what it accepted so the session page can
 say so. Do not "fix" a wide level spread inside a four: rule four wants it.
 
-**5. A saved draw goes stale.** Signups keep moving after the line-ups are drawn.
-`detectScheduleDrift` compares a saved draw against the current confirmed list,
-and the session page refuses to let that pass silently — the payment split is
-derived from the draw, so a stale draw means the wrong people are being charged.
+**5. A saved draw goes stale.** Signups keep moving after the line-ups are drawn,
+and so do the courts. `detectScheduleDrift` compares a saved draw against both
+the current confirmed list *and* the current booking, and the session page
+refuses to let either pass silently — the payment split is derived from the draw,
+so a stale draw means the wrong people are being charged. The booking half
+matters because a court can be dropped or shortened after a draw: the games on
+it stay in the database, off the screen but still feeding the payment schedule
+and the rating changes, so they are named rather than quietly lost.
 
 **6. A hand edit is checked, the draw is not.** The line-ups can be edited a
 block at a time, and `checkLineups` is what makes that safe. The generator cannot
@@ -238,6 +242,11 @@ opponent repeats are reported.
   built per-block first and that is exactly what went wrong: with a draw that
   meets everyone's quota, no per-block save that changes who plays can ever be
   legal. One form, one save, one verdict.
+- **Changing a mixin's courts after a draw strands games.** `updateSessionAction`
+  rewrites `session_courts` wholesale, but the `matches` rows are left alone —
+  they have to be, since deleting them would silently destroy recorded scores.
+  `reconstructRounds` shows only the courts a slot actually has, and
+  `outsideTheBooking` names the rest. Regenerating clears it up.
 - `session_courts` is keyed on `(session_id, court_number)`, so a court can hold
   one window per mixin. Two separate windows for the same court on the same night
   would need that key relaxed. `buildTimeline` already copes.

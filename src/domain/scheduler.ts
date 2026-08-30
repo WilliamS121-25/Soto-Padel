@@ -524,8 +524,13 @@ export function reconstructRounds(
 
   const rounds: Round[] = [];
   for (const slot of timeline) {
+    // Only courts this slot actually has. A match left over from a court that
+    // was dropped is not shown here as though it were still on — the drift
+    // report names it instead, which is honest about it being stranded rather
+    // than pretending the booking still covers it.
+    const running = new Set(slot.courts.map((court) => court.courtNumber));
     const slotMatches = matches
-      .filter((m) => m.slotIndex === slot.slotIndex)
+      .filter((m) => m.slotIndex === slot.slotIndex && running.has(m.courtNumber))
       .sort((a, b) => a.courtNumber - b.courtNumber);
     const playing = new Set(slotMatches.flatMap((m) => [...m.teamA, ...m.teamB]));
 
@@ -557,6 +562,14 @@ export interface ScheduleDrift {
   scheduledButNotAttending: string[];
   /** Confirmed to play but absent from the saved draw. */
   confirmedButNotScheduled: string[];
+  /**
+   * Games in the saved draw that the mixin no longer has room for, because a
+   * court was dropped or its hours were shortened after the draw was made.
+   * They are still stored, so they still feed the payment schedule and the
+   * rating changes — which is exactly why they have to be reported rather than
+   * quietly left off the screen.
+   */
+  outsideTheBooking: Match[];
   isStale: boolean;
 }
 
@@ -569,18 +582,38 @@ export interface ScheduleDrift {
  * spots the mismatch so the admin is told to redraw rather than sending out
  * stale line-ups.
  */
-export function detectScheduleDrift(confirmed: Signup[], matches: Match[]): ScheduleDrift {
+export function detectScheduleDrift(
+  session: Session,
+  confirmed: Signup[],
+  matches: Match[],
+): ScheduleDrift {
   const scheduled = new Set(matches.flatMap((m) => [...m.teamA, ...m.teamB]));
   const confirmedIds = new Set(confirmed.map((s) => s.playerId));
 
   const scheduledButNotAttending = [...scheduled].filter((id) => !confirmedIds.has(id));
   const confirmedButNotScheduled = [...confirmedIds].filter((id) => !scheduled.has(id));
 
+  // Courts get edited after a draw is made — one is dropped, or its hours are
+  // shortened. The matches that were on them stay in the database, so without
+  // this they would drop off the screen while still being charged for and still
+  // counting towards ratings.
+  const booked = new Set(
+    buildTimeline(session).flatMap((slot) =>
+      slot.courts.map((court) => `${slot.slotIndex}-${court.courtNumber}`),
+    ),
+  );
+  const outsideTheBooking = matches.filter(
+    (match) => !booked.has(`${match.slotIndex}-${match.courtNumber}`),
+  );
+
   return {
     scheduledButNotAttending,
     confirmedButNotScheduled,
+    outsideTheBooking,
     isStale:
       matches.length > 0 &&
-      (scheduledButNotAttending.length > 0 || confirmedButNotScheduled.length > 0),
+      (scheduledButNotAttending.length > 0 ||
+        confirmedButNotScheduled.length > 0 ||
+        outsideTheBooking.length > 0),
   };
 }

@@ -46,10 +46,10 @@ export default async function SessionPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ error?: string; notice?: string }>;
+  searchParams: Promise<{ error?: string; notice?: string; edit?: string }>;
 }) {
   const { id } = await params;
-  const { error, notice } = await searchParams;
+  const { error, notice, edit } = await searchParams;
 
   const session = await db.getSession(id);
   if (!session) notFound();
@@ -65,7 +65,7 @@ export default async function SessionPage({
 
   const matches = await db.listMatches(id);
   const rounds = reconstructRounds(session, allocation.confirmed, matches);
-  const drift = detectScheduleDrift(allocation.confirmed, matches);
+  const drift = detectScheduleDrift(session, allocation.confirmed, matches);
   const repeats = summariseRepeats(matches);
 
   const scoredMatches = matches.filter((match) =>
@@ -196,6 +196,13 @@ export default async function SessionPage({
             </tbody>
           </table>
         </div>
+
+        <p className="small muted" style={{ marginTop: 10 }}>
+          <Link href={`/sessions/${session.id}?edit=setup#setup`}>
+            Change the courts, their start times or their half-hours
+          </Link>{" "}
+          — along with the date, the cost per person and the rest of the setup.
+        </p>
       </div>
 
       {allocation.issues.length > 0 && (
@@ -461,6 +468,20 @@ export default async function SessionPage({
               <div className="small">
                 Confirmed but not in the draw:{" "}
                 {drift.confirmedButNotScheduled.map(nameOf).join(", ")}.
+              </div>
+            )}
+            {drift.outsideTheBooking.length > 0 && (
+              <div className="small">
+                {drift.outsideTheBooking.length} game
+                {drift.outsideTheBooking.length === 1 ? " is" : "s are"} on a court or at a time
+                this mixin no longer has, after the courts were changed:{" "}
+                {/* Named by block number, not by clock time: the slot they were drawn
+                    into no longer exists, so any time shown for it would be invented. */}
+                {drift.outsideTheBooking
+                  .map((m) => `court ${m.courtNumber} in block ${m.slotIndex + 1}`)
+                  .join(", ")}
+                . They are off the list above but still count towards the payment schedule and the
+                ratings until the draw is made again.
               </div>
             )}
             <div className="small">
@@ -874,10 +895,11 @@ export default async function SessionPage({
       </div>
 
       {/* ------------------------------------------------------------ setup -- */}
-      <div className="card">
-        <details>
+      <div className="card" id="setup">
+        <details open={edit === "setup"}>
           <summary>
-            <strong>Mixin setup</strong> <span className="muted small">— courts, times, cost</span>
+            <strong>Mixin setup</strong>{" "}
+            <span className="muted small">— courts, their times and hours, date, cost</span>
           </summary>
           <form action={updateSessionAction} style={{ marginTop: 14 }}>
             <input type="hidden" name="sessionId" value={session.id} />
